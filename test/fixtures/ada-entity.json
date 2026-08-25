@@ -1,0 +1,26 @@
+{
+    "@context": "http://schema.org",
+    "@id": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+    "@type": "Person",
+    "name": "Ada Lovelace",
+    "creator": "ANTLERS_2_0_TEST_AGENT",
+    "__rerum": {
+        "@context": "http://store.rerum.io/v1/context.json",
+        "alpha": true,
+        "APIversion": "1.1.0",
+        "createdAt": "2026-08-25T19:21:59.485",
+        "isOverwritten": "",
+        "isReleased": "",
+        "history": {
+            "next": [],
+            "previous": "",
+            "prime": "root"
+        },
+        "releases": {
+            "next": [],
+            "previous": "",
+            "replaces": ""
+        },
+        "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+    }
+}

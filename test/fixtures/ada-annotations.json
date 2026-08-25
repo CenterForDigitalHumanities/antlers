@@ -1,0 +1,326 @@
+[
+    {
+        "@context": "http://schema.org",
+        "@id": "https://devstore.rerum.io/v1/id/6a8deb57e339d7e147aaaf5c",
+        "type": "Annotation",
+        "target": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+        "body": {
+            "creator": {
+                "value": "ANTLERS_2_0_TEST_AGENT"
+            }
+        },
+        "creator": "ANTLERS_2_0_TEST_AGENT",
+        "__rerum": {
+            "@context": "http://store.rerum.io/v1/context.json",
+            "alpha": true,
+            "APIversion": "1.1.0",
+            "createdAt": "2026-08-25T19:21:59.648",
+            "isOverwritten": "",
+            "isReleased": "",
+            "history": {
+                "next": [],
+                "previous": "",
+                "prime": "root"
+            },
+            "releases": {
+                "next": [],
+                "previous": "",
+                "replaces": ""
+            },
+            "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+        }
+    },
+    {
+        "@context": "http://schema.org",
+        "@id": "https://devstore.rerum.io/v1/id/6a8deb57e339d7e147aaaf5b",
+        "type": "Annotation",
+        "target": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+        "body": {
+            "description": {
+                "value": "Test entity created by the antlers 2.0 test bench."
+            }
+        },
+        "creator": "ANTLERS_2_0_TEST_AGENT",
+        "__rerum": {
+            "@context": "http://store.rerum.io/v1/context.json",
+            "alpha": true,
+            "APIversion": "1.1.0",
+            "createdAt": "2026-08-25T19:21:59.646",
+            "isOverwritten": "",
+            "isReleased": "",
+            "history": {
+                "next": [],
+                "previous": "",
+                "prime": "root"
+            },
+            "releases": {
+                "next": [],
+                "previous": "",
+                "replaces": ""
+            },
+            "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+        }
+    },
+    {
+        "@context": "http://schema.org",
+        "@id": "https://devstore.rerum.io/v1/id/6a8deb57f4a5216c0d6c5ae0",
+        "type": "Annotation",
+        "target": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+        "body": {
+            "email": {
+                "@type": "Set",
+                "items": [
+                    "ada@example.org",
+                    "lovelace@example.org"
+                ]
+            }
+        },
+        "creator": "ANTLERS_2_0_TEST_AGENT",
+        "__rerum": {
+            "@context": "http://store.rerum.io/v1/context.json",
+            "alpha": true,
+            "APIversion": "1.1.0",
+            "createdAt": "2026-08-25T19:21:59.653",
+            "isOverwritten": "",
+            "isReleased": "",
+            "history": {
+                "next": [],
+                "previous": "",
+                "prime": "root"
+            },
+            "releases": {
+                "next": [],
+                "previous": "",
+                "replaces": ""
+            },
+            "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+        }
+    },
+    {
+        "@context": "http://schema.org",
+        "@id": "https://devstore.rerum.io/v1/id/6a8deb57e339d7e147aaaf5d",
+        "type": "Annotation",
+        "target": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+        "body": {
+            "name": {
+                "value": "Ada Lovelace"
+            }
+        },
+        "creator": "ANTLERS_2_0_TEST_AGENT",
+        "__rerum": {
+            "@context": "http://store.rerum.io/v1/context.json",
+            "alpha": true,
+            "APIversion": "1.1.0",
+            "createdAt": "2026-08-25T19:21:59.938",
+            "isOverwritten": "",
+            "isReleased": "",
+            "history": {
+                "next": [],
+                "previous": "",
+                "prime": "root"
+            },
+            "releases": {
+                "next": [],
+                "previous": "",
+                "replaces": ""
+            },
+            "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+        }
+    },
+    {
+        "@context": "http://schema.org",
+        "@id": "https://devstore.rerum.io/v1/id/6a8deb59f4a5216c0d6c5ae1",
+        "type": "Annotation",
+        "target": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+        "body": {
+            "targetCollection": "AntlersTestPeople"
+        },
+        "creator": "ANTLERS_2_0_TEST_AGENT",
+        "__rerum": {
+            "@context": "http://store.rerum.io/v1/context.json",
+            "alpha": true,
+            "APIversion": "1.1.0",
+            "createdAt": "2026-08-25T19:22:01.530",
+            "isOverwritten": "",
+            "isReleased": "",
+            "history": {
+                "next": [],
+                "previous": "",
+                "prime": "root"
+            },
+            "releases": {
+                "next": [],
+                "previous": "",
+                "replaces": ""
+            },
+            "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+        }
+    },
+    {
+        "@context": "http://schema.org",
+        "@id": "https://devstore.rerum.io/v1/id/6a8deb5aaf12f27d879cc33f",
+        "type": "Annotation",
+        "target": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+        "body": {
+            "telephone": {
+                "@type": "Set",
+                "items": [
+                    "+1 314 555 0100",
+                    "+1 314 555 0101"
+                ]
+            }
+        },
+        "creator": "ANTLERS_2_0_TEST_AGENT",
+        "__rerum": {
+            "@context": "http://store.rerum.io/v1/context.json",
+            "alpha": true,
+            "APIversion": "1.1.0",
+            "createdAt": "2026-08-25T19:22:02.435",
+            "isOverwritten": "",
+            "isReleased": "",
+            "history": {
+                "next": [],
+                "previous": "",
+                "prime": "root"
+            },
+            "releases": {
+                "next": [],
+                "previous": "",
+                "replaces": ""
+            },
+            "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+        }
+    },
+    {
+        "@context": "http://schema.org",
+        "@id": "https://devstore.rerum.io/v1/id/6a8deb5a603234d1d9742dec",
+        "type": "Annotation",
+        "target": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+        "body": {
+            "address": {
+                "@type": "Set",
+                "items": [
+                    "12 Baker Street, London",
+                    "5 Analytical Way, Torquay"
+                ]
+            }
+        },
+        "creator": "ANTLERS_2_0_TEST_AGENT",
+        "__rerum": {
+            "@context": "http://store.rerum.io/v1/context.json",
+            "alpha": true,
+            "APIversion": "1.1.0",
+            "createdAt": "2026-08-25T19:22:02.872",
+            "isOverwritten": "",
+            "isReleased": "",
+            "history": {
+                "next": [],
+                "previous": "",
+                "prime": "root"
+            },
+            "releases": {
+                "next": [],
+                "previous": "",
+                "replaces": ""
+            },
+            "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+        }
+    },
+    {
+        "@context": "http://schema.org",
+        "@id": "https://devstore.rerum.io/v1/id/6a8deb9e603234d1d9742ded",
+        "type": "Annotation",
+        "target": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+        "body": {
+            "note": {
+                "value": "Second pass: added via the annotate form."
+            }
+        },
+        "creator": "ANTLERS_2_0_TEST_AGENT",
+        "__rerum": {
+            "@context": "http://store.rerum.io/v1/context.json",
+            "alpha": true,
+            "APIversion": "1.1.0",
+            "createdAt": "2026-08-25T19:23:10.658",
+            "isOverwritten": "",
+            "isReleased": "",
+            "history": {
+                "next": [],
+                "previous": "",
+                "prime": "root"
+            },
+            "releases": {
+                "next": [],
+                "previous": "",
+                "replaces": ""
+            },
+            "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+        }
+    },
+    {
+        "@context": "http://schema.org",
+        "@id": "https://devstore.rerum.io/v1/id/6a8deb9ee339d7e147aaaf5e",
+        "type": "Annotation",
+        "target": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+        "body": {
+            "jobTitle": {
+                "value": "Mathematician"
+            }
+        },
+        "creator": "ANTLERS_2_0_TEST_AGENT",
+        "__rerum": {
+            "@context": "http://store.rerum.io/v1/context.json",
+            "alpha": true,
+            "APIversion": "1.1.0",
+            "createdAt": "2026-08-25T19:23:10.661",
+            "isOverwritten": "",
+            "isReleased": "",
+            "history": {
+                "next": [],
+                "previous": "",
+                "prime": "root"
+            },
+            "releases": {
+                "next": [],
+                "previous": "",
+                "replaces": ""
+            },
+            "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+        }
+    },
+    {
+        "@context": "http://schema.org",
+        "@id": "https://devstore.rerum.io/v1/id/6a8deb9ef4a5216c0d6c5ae2",
+        "type": "Annotation",
+        "target": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+        "body": {
+            "depiction": {
+                "@type": "Set",
+                "items": [
+                    "https://example.org/photos/ada-4.jpg",
+                    "https://example.org/photos/ada-5.jpg"
+                ]
+            }
+        },
+        "creator": "ANTLERS_2_0_TEST_AGENT",
+        "__rerum": {
+            "@context": "http://store.rerum.io/v1/context.json",
+            "alpha": true,
+            "APIversion": "1.1.0",
+            "createdAt": "2026-08-25T19:23:10.719",
+            "isOverwritten": "",
+            "isReleased": "",
+            "history": {
+                "next": [],
+                "previous": "https://devstore.rerum.io/v1/id/6a8deb57af12f27d879cc33e",
+                "prime": "https://devstore.rerum.io/v1/id/6a8deb57af12f27d879cc33e"
+            },
+            "releases": {
+                "next": [],
+                "previous": "",
+                "replaces": ""
+            },
+            "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+        }
+    }
+]

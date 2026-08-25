@@ -1,0 +1,74 @@
+{
+    "@context": "http://schema.org",
+    "@id": "https://devstore.rerum.io/v1/id/6a8deb57603234d1d9742deb",
+    "@type": "Person",
+    "name": [
+        "Ada Lovelace",
+        {
+            "value": "Ada Lovelace"
+        }
+    ],
+    "creator": [
+        "ANTLERS_2_0_TEST_AGENT",
+        {
+            "value": "ANTLERS_2_0_TEST_AGENT"
+        }
+    ],
+    "description": {
+        "value": "Test entity created by the antlers 2.0 test bench."
+    },
+    "email": {
+        "@type": "Set",
+        "items": [
+            "ada@example.org",
+            "lovelace@example.org"
+        ]
+    },
+    "targetCollection": "AntlersTestPeople",
+    "address": {
+        "@type": "Set",
+        "items": [
+            "12 Baker Street, London",
+            "5 Analytical Way, Torquay"
+        ]
+    },
+    "telephone": {
+        "@type": "Set",
+        "items": [
+            "+1 314 555 0100",
+            "+1 314 555 0101"
+        ]
+    },
+    "note": {
+        "value": "Second pass: added via the annotate form."
+    },
+    "jobTitle": {
+        "value": "Mathematician"
+    },
+    "depiction": {
+        "@type": "Set",
+        "items": [
+            "https://example.org/photos/ada-4.jpg",
+            "https://example.org/photos/ada-5.jpg"
+        ]
+    },
+    "__rerum": {
+        "@context": "http://store.rerum.io/v1/context.json",
+        "alpha": true,
+        "APIversion": "1.1.0",
+        "createdAt": "2026-08-25T19:21:59.485",
+        "isOverwritten": "",
+        "isReleased": "",
+        "history": {
+            "next": [],
+            "previous": "",
+            "prime": "root"
+        },
+        "releases": {
+            "next": [],
+            "previous": "",
+            "replaces": ""
+        },
+        "generatedBy": "http://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+    }
+}
