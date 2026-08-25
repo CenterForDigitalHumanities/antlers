@@ -10,9 +10,23 @@
  * document, which carries __rerum.generatedBy / creator — the body does not.
  */
 
+import config from './config.js'
 import { getValue } from './normalize.js'
 
 const DEFAULT_MATCH_ON = ["__rerum.generatedBy", "creator"]
+
+/**
+ * Is this `type`/`@type` value an Annotation?  Accepts a string or an array of
+ * strings; matches the bare and namespace-prefixed forms exactly ("Annotation",
+ * "oa:Annotation") — deliberately NOT a substring match, so "AnnotationPage"
+ * does not qualify.
+ * @param {String|Array<String>} typeValue the document's type or @type.
+ * @returns {Boolean}
+ */
+export function isAnnotationType(typeValue) {
+    return [typeValue].flat().some(t =>
+        typeof t === "string" && (t === "Annotation" || t.endsWith(":Annotation")))
+}
 
 /**
  * Match on criteria (if exists) and return true if it appears to match on the
@@ -42,7 +56,7 @@ export function checkMatch(expanding, asserting, matchOn = DEFAULT_MATCH_ON) {
             if (anno_match.some(item => obj_match.includes(item))) {
                 // NOTE: this mismatches if some of the Anno assertion is missing, which
                 // may lead to duplicates downstream.
-                console.warn("Incomplete match may require additional handling. ", obj_match, anno_match)
+                if (config.DEBUG) { console.warn("Incomplete match may require additional handling. ", obj_match, anno_match) }
             }
             break
         }
@@ -93,7 +107,7 @@ export function applyAssertions(entity, annotations = [], matchOn = DEFAULT_MATC
         for (const body of bodies.flat(2)) {
             if (!body || typeof body !== "object") { continue }
             for (const [key, val] of Object.entries(body)) {
-                if (val === undefined) { continue }
+                if (val === undefined || val === null) { continue }
                 mergeAssertion(assertOn, key, buildValueObject(val, anno))
             }
         }

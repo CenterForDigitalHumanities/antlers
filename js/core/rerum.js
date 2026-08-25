@@ -32,13 +32,24 @@ export function idOf(entity) {
 }
 
 /**
+ * The canonical (https) form of an id.  RERUM records ids with whichever
+ * protocol the writing proxy sent, so every comparison, request, and map key
+ * must normalize through this first.
+ * @param {String} id the URI to normalize.
+ * @returns {String} the https form.
+ */
+export function canonicalId(id) {
+    return (typeof id === "string") ? id.replace(/^https?:/, 'https:') : id
+}
+
+/**
  * RERUM records ids with whichever protocol the writing proxy sent, so queries
  * must match both forms.
  * @param {String} id the URI to vary.
  * @returns {Object} a Mongo-style `$in` clause over the http and https forms.
  */
 export function httpsIdArray(id) {
-    return { $in: [id.replace(/^https?:/, 'https:'), id.replace(/^https?:/, 'http:')] }
+    return { $in: [canonicalId(id), id.replace(/^https?:/, 'http:')] }
 }
 
 /**
@@ -50,13 +61,16 @@ export function httpsIdArray(id) {
  */
 export function isRerumId(id) {
     if (typeof id !== "string") { return false }
-    const httpsId = id.replace(/^https?:/, 'https:')
+    const httpsId = canonicalId(id)
     return config.ID_BASES.some(base => httpsId.startsWith(base))
 }
 
 function handleResponse(response) {
     if (!response.ok) {
-        throw new Error(`HTTP ${response.status}${response.statusText ? `: ${response.statusText}` : ""}`)
+        throw Object.assign(
+            new Error(`HTTP ${response.status}${response.statusText ? `: ${response.statusText}` : ""}`),
+            { status: response.status }
+        )
     }
     return response.json()
 }
@@ -69,7 +83,7 @@ function handleResponse(response) {
  * @returns {Promise<Object>} the document.
  */
 export function resolve(id, { fresh = false } = {}) {
-    const uri = idOf(id).replace(/^https?:/, 'https:')
+    const uri = canonicalId(idOf(id))
     return fetcher(uri, fresh ? { cache: "reload" } : {}).then(handleResponse)
 }
 
@@ -84,11 +98,11 @@ export function resolve(id, { fresh = false } = {}) {
  * @returns {Promise<Object>} the entity with annotations merged in.  The server
  * drops every annotation `@id`, so this response has no provenance.
  */
-export function expanded(id, { generator = config.GENERATOR, fresh = false } = {}) {
+export async function expanded(id, { generator = config.GENERATOR, fresh = false } = {}) {
     if (!generator) {
         throw new TypeError("expanded() requires a generator. Pass { generator } or set config.GENERATOR — the server applies no default filter and would merge annotations from every application.")
     }
-    const uri = idOf(id).replace(/^https?:/, 'https:')
+    const uri = canonicalId(idOf(id))
     const url = `${uri}/expanded?generator=${encodeURIComponent(generator)}`
     return fetcher(url, fresh ? { cache: "reload" } : {}).then(handleResponse)
 }
@@ -100,9 +114,12 @@ export function expanded(id, { generator = config.GENERATOR, fresh = false } = {
  * @returns {Promise<Array<Object>>} matching documents.
  */
 export function query(body, { limit = config.LIMIT, skip = config.SKIP, fresh = false } = {}) {
-    const sep = config.URLS.QUERY.includes("?") ? "&" : "?"
-    const url = `${config.URLS.QUERY}${sep}limit=${limit}&skip=${skip}`
-    return fetcher(url, {
+    // URL-object building replaces (not duplicates) any limit/skip already baked
+    // into an implementer's configured QUERY URL — the 0.11 config shape.
+    const url = new URL(config.URLS.QUERY)
+    url.searchParams.set("limit", limit)
+    url.searchParams.set("skip", skip)
+    return fetcher(url.toString(), {
         method: "POST",
         headers: JSON_HEADERS,
         body: JSON.stringify(body),

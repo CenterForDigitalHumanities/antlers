@@ -35,7 +35,10 @@ const config = {
     LIMIT: 50,
     SKIP: 0,
 
-    // Injectable fetch for tests and non-browser hosts; falls back to globalThis.fetch.
+    // Verbose library logging (missing-value lookups, incomplete checkMatch matches).
+    DEBUG: false,
+
+    // Injectable fetch for non-browser hosts and live instrumentation; falls back to globalThis.fetch.
     fetch: undefined
 }
 

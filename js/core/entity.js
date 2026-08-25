@@ -11,13 +11,15 @@
  * ./rerum.js.
  *
  * EntityMap is render coordination, not a data cache: an identity map keyed by
- * id plus one in-flight resolution promise per id, so two consumers of the same
- * deer-id share one object and one fetch (the core-level deer#96 fix).  The
+ * the canonical (https) id form plus one in-flight resolution promise per id,
+ * so two consumers of the same deer-id share one object and one fetch (the
+ * core-level deer#96 fix) — whichever protocol form each arrived with.  The
  * browser HTTP cache is the only data cache.
  */
 
+import config from './config.js'
 import * as rerum from './rerum.js'
-import { applyAssertions } from './assertions.js'
+import { applyAssertions, isAnnotationType } from './assertions.js'
 
 const EntityMap = new Map()
 const inFlight = new Map()
@@ -55,7 +57,7 @@ function objectMatch(o1 = {}, o2 = {}) {
  */
 function sameId(a, b) {
     if (typeof a !== "string" || typeof b !== "string") { return false }
-    return a.replace(/^https?:/, 'https:') === b.replace(/^https?:/, 'https:')
+    return rerum.canonicalId(a) === rerum.canonicalId(b)
 }
 
 /**
@@ -66,7 +68,7 @@ function sameId(a, b) {
  * @returns {Entity}
  */
 function getEntity(id, { lazy = false } = {}) {
-    const key = (typeof id === "string") ? id : id?.["@id"] ?? id?.id
+    const key = rerum.canonicalId((typeof id === "string") ? id : id?.["@id"] ?? id?.id)
     if (EntityMap.has(key)) { return EntityMap.get(key) }
     return new Entity((typeof id === "string") ? { id } : id, lazy)
 }
@@ -106,7 +108,7 @@ class Entity extends EventTarget {
         }
         const id = entity.id ?? entity["@id"] // id is primary key
         if (typeof id !== "string" || id.length === 0) { throw new Error("Entity must have an id") }
-        if (EntityMap.has(id)) { throw new Error(`Entity ${id} already exists. Use getEntity() to share it.`) }
+        if (EntityMap.has(rerum.canonicalId(id))) { throw new Error(`Entity ${id} already exists. Use getEntity() to share it.`) }
         this.Annotations = new Map()
         this.#isLazy = Boolean(isLazy)
         this.data = entity
@@ -125,21 +127,23 @@ class Entity extends EventTarget {
     }
 
     set data(entity) {
-        entity.id = entity.id ?? entity["@id"] // id is primary key
-        if (objectMatch(this._data, entity)) {
+        // Adopt a shallow copy so the caller's object is never mutated.
+        const candidate = { ...entity, id: entity.id ?? entity["@id"] } // id is primary key
+        if (objectMatch(this._data, candidate)) {
             // no-op suppression: identical data must not re-announce (render loop guard)
             return
         }
         const oldId = this._data?.id
-        this._data = entity
-        EntityMap.set(this.id, this)
+        this._data = candidate
+        EntityMap.set(rerum.canonicalId(this.id), this)
         this.#announce("update", this.assertions)
-        if (oldId !== this.id) {
+        if (!sameId(oldId, this.id)) {
             this.resolve().then(() => this.#announce("reload", this))
         }
     }
 
     attachAnnotation(annotation) {
+        if (annotation.id === undefined || annotation.id === null) { return }
         this.Annotations.set(annotation.id, annotation)
     }
 
@@ -151,11 +155,14 @@ class Entity extends EventTarget {
      * @returns {Promise<void>} settles when resolution has been applied.
      */
     resolve({ fresh = false } = {}) {
-        const key = this.id
-        if (inFlight.has(key)) { return inFlight.get(key) }
+        const key = rerum.canonicalId(this.id)
+        const pending = inFlight.get(key)
+        // A pending non-fresh resolution cannot satisfy a fresh request —
+        // read-after-write must never be served a stale in-flight promise.
+        if (pending && (pending.fresh || !fresh)) { return pending.promise }
         const promise = this.#resolveURI(!this.#isLazy, fresh)
-            .finally(() => inFlight.delete(key))
-        inFlight.set(key, promise)
+            .finally(() => { if (inFlight.get(key)?.promise === promise) { inFlight.delete(key) } })
+        inFlight.set(key, { promise, fresh })
         return promise
     }
 
@@ -163,11 +170,12 @@ class Entity extends EventTarget {
         try {
             const finds = Array.isArray(assertions) ? assertions : await rerum.findByTargetId(this.id)
             const annotations = finds
-                .filter(a => (a.type ?? a['@type'])?.includes("Annotation"))
+                .filter(a => isAnnotationType(a.type ?? a['@type']))
                 .map(anno => new Annotation(anno))
-            annotations.length ? this.#announce("update", this.assertions) : this.#announce("complete")
+            if (annotations.length) { this.#announce("update", this.assertions) }
+            this.#announce("complete")
         } catch (err) {
-            console.warn(err)
+            this.#announce("error", err)
         }
     }
 
@@ -182,12 +190,16 @@ class Entity extends EventTarget {
                     "__rerum.history.next": { "$exists": true, "$size": 0 }
                 }
                 const finds = await rerum.query(obj, { fresh })
-                if (!Array.isArray(finds) || finds.length === 0) {
-                    throw Object.assign(new Error(`${this.id} not found`), { status: 404 })
+                const list = Array.isArray(finds) ? finds : []
+                if (list.length >= config.LIMIT) {
+                    console.warn(`Compound query for ${this.id} returned ${list.length} documents (limit ${config.LIMIT}) — annotations beyond the limit are not merged.`)
                 }
-                const originalObject = finds.find(e => sameId(e["@id"], this.id))
-                if (originalObject) { this.data = originalObject }
-                await this.#findAssertions(finds.filter(e => !sameId(e["@id"], this.id)))
+                // The leaf filter excludes an entity that has since been updated,
+                // and a full page can crowd the entity document out entirely —
+                // recover it with a direct GET (which 404s if it truly is absent).
+                this.data = list.find(e => sameId(e["@id"], this.id))
+                    ?? await rerum.resolve(this.id, { fresh })
+                await this.#findAssertions(list.filter(e => !sameId(e["@id"], this.id)))
             } else {
                 this.data = await rerum.resolve(this.id, { fresh })
                 await this.#findAssertions()

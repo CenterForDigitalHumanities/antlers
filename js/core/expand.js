@@ -17,7 +17,7 @@
  */
 
 import * as rerum from './rerum.js'
-import { applyAssertions, buildValueObject } from './assertions.js'
+import { applyAssertions, buildValueObject, isAnnotationType } from './assertions.js'
 
 // Client-path filter: an annotation augments the entity when its
 // __rerum.generatedBy or creator matches the entity's own.  Self-adapting to
@@ -69,14 +69,14 @@ async function clientExpand(uri, { fresh = false } = {}) {
         rerum.findByTargetId(uri, { fresh })
     ])
     const annotations = (Array.isArray(finds) ? finds : [])
-        .filter(a => (a.type ?? a['@type'])?.includes("Annotation"))
+        .filter(a => isAnnotationType(a.type ?? a['@type']))
     return applyAssertions(entity, annotations, MATCH_ON)
 }
 
 /**
  * Shape a raw `/expanded` response into DEER form: every asserted property
  * becomes a `{value, source, evidence}` object.  The server drops annotation
- * @ids, so `source.citationSource` is undefined on this path — the tested
+ * @ids, so `source.citationSource` is undefined on this path — the documented
  * divergence from the editing path.
  */
 function shapeExpanded(merged) {
@@ -86,8 +86,11 @@ function shapeExpanded(merged) {
             shaped[key] = val
             continue
         }
+        // A null merged value asserts nothing — the server passes annotation
+        // nulls straight through, and shaping one would be a crash, not a value.
+        if (val === undefined || val === null) { continue }
         shaped[key] = Array.isArray(val)
-            ? val.map(v => buildValueObject(v))
+            ? val.filter(v => v !== undefined && v !== null).map(v => buildValueObject(v))
             : buildValueObject(val)
     }
     return shaped

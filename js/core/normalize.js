@@ -3,10 +3,13 @@
  * @author Patrick Cuba <cubap@slu.edu>
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
- * Ported from the 0.11 UTILS.getValue / UTILS.getLabel with one behavioral fix:
- * a failed type cast now throws to the caller instead of being swallowed by a
- * `finally { return … }`.
+ * Ported from the 0.11 UTILS.getValue / UTILS.getLabel with three behavioral
+ * fixes: a failed type cast now throws to the caller instead of being swallowed
+ * by a `finally { return … }`, null input is treated as missing instead of
+ * crashing the peek loop, and the BOOLEAN cast is no longer inverted.
  */
+
+import config from './config.js'
 
 /**
  * Dig the usable value out of a property that may be a primitive, an object
@@ -18,8 +21,8 @@
  */
 export function getValue(property, alsoPeek = [], asType) {
     let prop
-    if (property === undefined || property === "") {
-        console.error("Value of property to lookup is missing!")
+    if (property === undefined || property === null || property === "") {
+        if (config.DEBUG) { console.warn("Value of property to lookup is missing!") }
         return undefined
     }
     if (Array.isArray(property)) {
@@ -27,8 +30,8 @@ export function getValue(property, alsoPeek = [], asType) {
         return property
     }
     if (typeof property === "object") {
-        // TODO: JSON-LD insists on "@value", but this is simplified in a lot
-        // of contexts. Reading that is ideal in the future.
+        // JSON-LD insists on "@value", but the wild data this consumes
+        // simplifies it many different ways — hence the peek list.
         if (!Array.isArray(alsoPeek)) { alsoPeek = [alsoPeek] }
         alsoPeek = alsoPeek.concat(["@value", "value", "$value", "val"])
         for (const k of alsoPeek) {
@@ -54,7 +57,7 @@ export function getValue(property, alsoPeek = [], asType) {
                     prop = parseInt(prop)
                     break
                 case "BOOLEAN":
-                    prop = !Boolean(["false", "no", "0", "", "undefined", "null"].indexOf(String(prop).toLowerCase().trim()))
+                    prop = !["false", "no", "0", "", "undefined", "null"].includes(String(prop).toLowerCase().trim())
                     break
                 default:
             }
@@ -73,6 +76,7 @@ export function getValue(property, alsoPeek = [], asType) {
  * @returns {any} the discovered label or the fallback.
  */
 export function getLabel(obj, noLabel = "[ unlabeled ]", options = {}) {
+    if (obj === undefined || obj === null) { return noLabel }
     if (typeof obj === "string") { return obj }
     let label = obj[options.label] || obj.name || obj.label || obj.title
     if (Array.isArray(label)) {
