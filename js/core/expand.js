@@ -12,20 +12,22 @@
  * is what deer-form prefills from and what keeps the create-vs-update trigger
  * working.  Forms use this.
  *
+ * Both paths return the same shape — every non-identity value is a
+ * `{value, source, evidence}` object, or an array of them — because both
+ * finish in assertions.shapeValues.  Provenance is the only difference:
+ * `source.citationSource` is undefined on the display path.
+ *
  * Views must never call forEditing; forms must never call forDisplay.
  * (Enforced by the elements in a later PR; recorded here as the contract.)
  */
 
 import * as rerum from './rerum.js'
-import { applyAssertions, buildValueObject, isAnnotationType } from './assertions.js'
+import { applyAssertions, isAnnotationType, requireDocument, shapeValues } from './assertions.js'
 
 // Client-path filter: an annotation augments the entity when its
 // __rerum.generatedBy or creator matches the entity's own.  Self-adapting to
 // proprietary TinyNode agents — no configuration needed on this path.
 const MATCH_ON = ["__rerum.generatedBy", "creator"]
-
-// Passed through untouched by the display shaping — identity, not assertion.
-const IDENTITY_KEYS = ["@id", "id", "@type", "type", "@context", "__rerum"]
 
 /**
  * Resolve an entity for display: server-side annotation merge for RERUM-hosted
@@ -42,7 +44,7 @@ export async function forDisplay(id, { generator, fresh = false } = {}) {
     const uri = rerum.idOf(id)
     if (rerum.isRerumId(uri)) {
         const merged = await rerum.expanded(uri, { generator, fresh })
-        return shapeExpanded(merged)
+        return shapeValues(requireDocument(merged, `The expanded read of ${uri}`))
     }
     return clientExpand(uri, { fresh })
 }
@@ -70,28 +72,5 @@ async function clientExpand(uri, { fresh = false } = {}) {
     ])
     const annotations = (Array.isArray(finds) ? finds : [])
         .filter(a => isAnnotationType(a.type ?? a['@type']))
-    return applyAssertions(entity, annotations, MATCH_ON)
-}
-
-/**
- * Shape a raw `/expanded` response into DEER form: every asserted property
- * becomes a `{value, source, evidence}` object.  The server drops annotation
- * @ids, so `source.citationSource` is undefined on this path — the documented
- * divergence from the editing path.
- */
-function shapeExpanded(merged) {
-    const shaped = {}
-    for (const [key, val] of Object.entries(merged)) {
-        if (IDENTITY_KEYS.includes(key)) {
-            shaped[key] = val
-            continue
-        }
-        // A null merged value asserts nothing — the server passes annotation
-        // nulls straight through, and shaping one would be a crash, not a value.
-        if (val === undefined || val === null) { continue }
-        shaped[key] = Array.isArray(val)
-            ? val.filter(v => v !== undefined && v !== null).map(v => buildValueObject(v))
-            : buildValueObject(val)
-    }
-    return shaped
+    return applyAssertions(requireDocument(entity, `The read of ${uri}`), annotations, MATCH_ON)
 }

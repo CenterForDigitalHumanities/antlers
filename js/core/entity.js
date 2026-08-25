@@ -61,10 +61,29 @@ function sameId(a, b) {
 }
 
 /**
+ * The stable identity of an annotation across its RERUM versions: the root of
+ * its version chain (`__rerum.history.prime`, which is the literal "root" on the
+ * original document and the original's @id on every later version).  Keying
+ * Annotations by this means an updated annotation REPLACES the version it
+ * supersedes instead of accumulating beside it — without this, a read after a
+ * write merges the stale value and the new one together.
+ * @param {Annotation} annotation the annotation to identify.
+ * @returns {String} the version-chain root id, or the annotation's own id for
+ * documents that carry no RERUM history.
+ */
+function versionRootId(annotation) {
+    const prime = annotation.data?.__rerum?.history?.prime
+    return (typeof prime === "string" && prime !== "root")
+        ? rerum.canonicalId(prime)
+        : rerum.canonicalId(annotation.id)
+}
+
+/**
  * The shared way to obtain an Entity: returns the one already coordinating a
  * given id, or constructs (and begins resolving) a new one.
  * @param {String|Object} id the entity URI or an object carrying one.
- * @param {Object} options `lazy: true` resolves the URI without the compound annotation query.
+ * @param {Object} options `lazy: true` resolves the URI with a direct GET plus a
+ * targeting-annotation query instead of the single compound query.
  * @returns {Entity}
  */
 function getEntity(id, { lazy = false } = {}) {
@@ -94,7 +113,8 @@ class Entity extends EventTarget {
     /**
      * @param {Object|String} entity object to be described (usually from a JSON-LD
      * document), a JSON string of one, or a bare URI string.
-     * @param {Boolean} isLazy true if the compound annotation query should not be made.
+     * @param {Boolean} isLazy true if the single compound query should not be made;
+     * the URI is fetched directly and its annotations queried separately instead.
      */
     constructor(entity = {}, isLazy) {
         super()
@@ -135,6 +155,9 @@ class Entity extends EventTarget {
         }
         const oldId = this._data?.id
         this._data = candidate
+        // When resolution changes the id, the previous key is left pointing at
+        // this same Entity on purpose — consumers that arrived with the old URI
+        // keep resolving to it rather than constructing a second object.
         EntityMap.set(rerum.canonicalId(this.id), this)
         this.#announce("update", this.assertions)
         if (!sameId(oldId, this.id)) {
@@ -144,13 +167,16 @@ class Entity extends EventTarget {
 
     attachAnnotation(annotation) {
         if (annotation.id === undefined || annotation.id === null) { return }
-        this.Annotations.set(annotation.id, annotation)
+        // Keyed by version-chain root, so re-resolving after a write replaces a
+        // superseded annotation instead of leaving both versions to assert.
+        this.Annotations.set(versionRootId(annotation), annotation)
     }
 
     /**
-     * Resolve this entity's URI (and, unless lazy, its targeting annotations).
-     * Concurrent calls for the same id share one in-flight promise — two
-     * consumers of the same deer-id cost one fetch.
+     * Resolve this entity's URI (and its targeting annotations — in one compound
+     * query, or as a GET plus a separate query when lazy).  Concurrent calls for
+     * the same id share one in-flight promise — two consumers of the same
+     * deer-id cost one round trip.
      * @param {Object} options `fresh: true` busts the HTTP cache (read-after-write).
      * @returns {Promise<void>} settles when resolution has been applied.
      */
@@ -169,10 +195,16 @@ class Entity extends EventTarget {
     #findAssertions = async (assertions) => {
         try {
             const finds = Array.isArray(assertions) ? assertions : await rerum.findByTargetId(this.id)
-            const annotations = finds
-                .filter(a => isAnnotationType(a.type ?? a['@type']))
-                .map(anno => new Annotation(anno))
-            if (annotations.length) { this.#announce("update", this.assertions) }
+            // Constructing an Annotation self-wires it onto every Entity it
+            // targets, so this loop is all side effect — there is nothing to
+            // collect from it but the count.
+            let attached = 0
+            for (const anno of finds) {
+                if (!isAnnotationType(anno.type ?? anno['@type'])) { continue }
+                new Annotation(anno)
+                attached++
+            }
+            if (attached) { this.#announce("update", this.assertions) }
             this.#announce("complete")
         } catch (err) {
             this.#announce("error", err)
@@ -238,6 +270,10 @@ class Annotation {
         return this.data["@id"] ?? this.data.id // id is primary key
     }
 
+    // Self-wiring: an id not already coordinated gets an Entity, and a new
+    // Entity begins resolving itself.  An annotation with several targets
+    // therefore pulls its other targets (and their annotations) into memory as
+    // a side effect of resolving the first one.
     #registerTargets = () => {
         let targets = this.data.target
         if (!Array.isArray(targets)) { targets = [targets] }

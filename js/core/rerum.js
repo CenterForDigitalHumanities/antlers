@@ -113,10 +113,13 @@ export async function expanded(id, { generator = config.GENERATOR, fresh = false
  * @param {Object} options `limit`/`skip` paging (config defaults), `fresh`.
  * @returns {Promise<Array<Object>>} matching documents.
  */
-export function query(body, { limit = config.LIMIT, skip = config.SKIP, fresh = false } = {}) {
+export async function query(body, { limit = config.LIMIT, skip = config.SKIP, fresh = false } = {}) {
     // URL-object building replaces (not duplicates) any limit/skip already baked
-    // into an implementer's configured QUERY URL — the 0.11 config shape.
-    const url = new URL(config.URLS.QUERY)
+    // into an implementer's configured QUERY URL.  The document base matters:
+    // the 0.11 config shape is protocol-relative ("//tinydev.rerum.io/app/query",
+    // deer-config.js:31) and a same-origin proxy is configured as "/app/query" —
+    // fetch() accepts both, and new URL() without a base rejects both.
+    const url = new URL(config.URLS.QUERY, globalThis.location?.href)
     url.searchParams.set("limit", limit)
     url.searchParams.set("skip", skip)
     return fetcher(url.toString(), {
