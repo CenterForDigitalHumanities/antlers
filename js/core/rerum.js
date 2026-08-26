@@ -7,8 +7,8 @@
  * (deer-render.js, deer-record.js, deer-utils.js) behind one surface.
  * Reads go straight to RERUM; writes go through the deployment's TinyNode
  * proxy (config.URLS).  HTTP contract, confirmed against the 0.11 runtime:
- * CREATE is POST, UPDATE/OVERWRITE are PUT, and tiny proxy responses wrap
- * the result in `new_obj_state`.
+ * CREATE is POST, UPDATE/OVERWRITE are PUT, and the response body is the
+ * written document itself.
  *
  * This module also owns the cache-mode policy.  A write records every URI it
  * invalidated -- the document itself, and for an Annotation every entity it
@@ -348,7 +348,14 @@ async function write(url, method, obj) {
         body: JSON.stringify(obj)
     })
         .then(handleResponse)
-        .then(data => data.new_obj_state ?? data)
+        .then(data => {
+            // RERUM attaches `new_obj_state`, a self-copy of the response body, to
+            // every write response.  It is deprecated and slated for removal, and
+            // it is stripped rather than read so it can never round-trip back into
+            // a stored document.
+            delete data?.new_obj_state
+            return data
+        })
         .then(saved => {
             // The written document's own cached read is stale, and so is every
             // entity it targets — writing an Annotation changes the `/expanded`
@@ -361,7 +368,7 @@ async function write(url, method, obj) {
 /**
  * Create a new document through the TinyNode proxy.
  * @param {Object} obj the document to create.
- * @returns {Promise<Object>} the created document (unwrapped from `new_obj_state`).
+ * @returns {Promise<Object>} the created document.
  */
 export function create(obj) {
     return write(config.URLS.CREATE, "POST", obj)
@@ -370,7 +377,7 @@ export function create(obj) {
 /**
  * Update a document through the TinyNode proxy, creating a new version.
  * @param {Object} obj the document, carrying the `@id` to update.
- * @returns {Promise<Object>} the new version (unwrapped from `new_obj_state`).
+ * @returns {Promise<Object>} the new version.
  */
 export function update(obj) {
     return write(config.URLS.UPDATE, "PUT", obj)
@@ -379,7 +386,7 @@ export function update(obj) {
 /**
  * Overwrite a document in place through the TinyNode proxy.
  * @param {Object} obj the document, carrying the `@id` to overwrite.
- * @returns {Promise<Object>} the overwritten document (unwrapped from `new_obj_state`).
+ * @returns {Promise<Object>} the overwritten document.
  */
 export function overwrite(obj) {
     return write(config.URLS.OVERWRITE, "PUT", obj)
