@@ -213,6 +213,16 @@ function needsReload(uri, url) {
 }
 
 /**
+ * Drop every write invalidation.  For teardown and tests only — entity.js
+ * clearEntities() calls this, because bookkeeping left behind here outlives the
+ * Entity state it belongs to and makes the next session's first read of an
+ * affected URI force a reload for no reason.
+ */
+export function clearStale() {
+    staleIds.clear()
+}
+
+/**
  * Read a non-negative integer count header.  `headers.get()` returns null for a
  * header the deployment never sent and `Number(null)` is 0, so coercing
  * directly turns "the server told me nothing" into "it merged 0 of 0" — which
@@ -326,7 +336,12 @@ export async function query(body, { limit = config.LIMIT, skip = config.SKIP } =
     }).then(handleResponse)
 }
 
-function write(url, method, obj) {
+// `async` for the same reason every read on this module is: absoluteUrl throws
+// on a relative URL with no base, and a surface where some failures reject and
+// others throw synchronously is what breaks a caller batching these under
+// Promise.all.  A browser borrows location.href, so this only bites the Node and
+// worker hosts the core layer is meant to be importable from.
+async function write(url, method, obj) {
     return fetcher(absoluteUrl(url), {
         method,
         headers: JSON_HEADERS,

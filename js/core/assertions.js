@@ -84,16 +84,31 @@ export const TEXTUAL_BODY_TYPES = new Set([
 const SHAPED = new WeakSet()
 
 /**
+ * The Annotation type spellings the server anticipates
+ * (rerum_server_nodejs/controllers/utils.js annoTypeConditions).  Mirrored here
+ * because this list decides which documents the CLIENT read merges: a spelling
+ * the server gathers and this set does not is an annotation `/expanded` merges
+ * and the client path silently drops — and the merge counts agree, so
+ * forDisplay's divergence guard never fires.
+ */
+const ANNOTATION_TYPES = new Set([
+    "Annotation", "oa:Annotation",
+    "http://www.w3.org/ns/oa#Annotation", "https://www.w3.org/ns/oa#Annotation"
+])
+
+/**
  * Is this `type`/`@type` value an Annotation?  Accepts a string or an array of
- * strings; matches the bare and namespace-prefixed forms exactly ("Annotation",
- * "oa:Annotation") — deliberately NOT a substring match, so "AnnotationPage"
- * does not qualify.
+ * strings; matches the spellings the server matches, plus any namespace-prefixed
+ * form — deliberately NOT a substring match, so "AnnotationPage" does not
+ * qualify.  The `:Annotation` clause is deliberately BROADER than the server's
+ * fixed `oa:` spelling: erring wide costs a merge the server declined, which the
+ * counts guard catches, while erring narrow drops an assertion silently.
  * @param {String|Array<String>} typeValue the document's type or @type.
  * @returns {Boolean}
  */
 export function isAnnotationType(typeValue) {
     return [typeValue].flat().some(t =>
-        typeof t === "string" && (t === "Annotation" || t.endsWith(":Annotation")))
+        typeof t === "string" && (ANNOTATION_TYPES.has(t) || t.endsWith(":Annotation")))
 }
 
 /**
@@ -270,6 +285,15 @@ export function applyAssertions(entity, annotations = []) {
     // updated annotation would otherwise hold the position its superseded
     // version had — its edit would sort as though it were the original.
     for (const anno of inAssertionOrder(annotations)) {
+        // An annotation with no id has no citationSource to contribute, and a
+        // value merged without one makes the next form save POST a duplicate
+        // assertion instead of updating.  Entity#attachAnnotation already
+        // refuses these for the same reason, so skipping here is what keeps the
+        // two editing entry points — expand.forEditing and Entity#assertions —
+        // returning the same document.  `@id` or `id`: RERUM negotiates which
+        // one it returns from the document's own @context.
+        const annoId = anno?.["@id"] ?? anno?.id
+        if (annoId === undefined || annoId === null) { continue }
         // A superseded annotation asserts nothing.  RERUM mints a new @id on
         // update, so a stale version merged beside its replacement would yield
         // two conflicting values and two citationSources.  The queries filter

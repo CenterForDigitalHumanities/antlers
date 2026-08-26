@@ -209,6 +209,10 @@ function clearEntities() {
     EntityMap.clear()
     inFlight.clear()
     editingIds.clear()
+    // The write-invalidation bookkeeping lives in rerum.js and would otherwise
+    // outlive this teardown, leaving a forced reload pending for the next
+    // session's first read.
+    rerum.clearStale()
 }
 
 /**
@@ -532,6 +536,15 @@ class Entity extends EventTarget {
      */
     #findAssertions = (annotations) => {
         this.Annotations = new Map()
+        // Rebuilding the Map changes the merge even when nothing re-attaches, so
+        // the memo cannot survive it.  attachAnnotation invalidates for each
+        // annotation this read DID return, and `set data` for a changed entity
+        // document — but a read that returns NO annotations for an entity whose
+        // document is unchanged hits neither, and `set data` suppresses itself
+        // as a no-op.  The announcement below then hands subscribers the
+        // previous merge, still carrying values whose annotations have been
+        // deleted, retargeted, or have stopped matching the generator filter.
+        this.#assertions = undefined
         for (const anno of annotations) {
             this.attachAnnotation(new Annotation(anno))
         }

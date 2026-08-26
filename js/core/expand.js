@@ -68,7 +68,7 @@ const divergentEntities = new Set()
 
 /** Keep only the documents that are actually Annotations. */
 const onlyAnnotations = (finds) => (Array.isArray(finds) ? finds : [])
-    .filter(doc => isAnnotationType(doc.type ?? doc["@type"]))
+    .filter(doc => doc && isAnnotationType(doc.type ?? doc["@type"]))
 
 
 /**
@@ -86,6 +86,47 @@ const onlyAnnotations = (finds) => (Array.isArray(finds) ? finds : [])
 function requireRerumId(uri) {
     if (rerum.isRerumId(uri)) { return }
     throw new TypeError(`${uri} is not hosted by RERUM, and DEER reads and writes RERUM entities only. If this IS your RERUM deployment, add its id base to config.ID_BASES (currently ${JSON.stringify(config.ID_BASES)}).`)
+}
+
+/**
+ * The properties an Annotation can carry the URI of its target under, mirroring
+ * findLeafAnnotationsFor's TARGET_KEYS
+ * (rerum_server_nodejs/controllers/utils.js).  KEEP IN STEP WITH THE SERVER: a
+ * key the server matches and this list does not is an annotation `/expanded`
+ * merges and the client read never sees.  The merge counts agree in that case,
+ * so forDisplay's divergence guard cannot notice it — a view shows the value,
+ * the form editing the same entity is blind to it, and the next save POSTs a
+ * duplicate assertion instead of updating.
+ */
+const TARGET_KEYS = ["target", "target.@id", "target.id",
+    "target.source", "target.source.@id", "target.source.id"]
+
+/** Escape the RegExp metacharacters in a literal so it matches only itself. */
+const escapeRegex = (literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+
+/**
+ * Every way an Annotation can name this entity as its target: each target key
+ * against both protocol spellings, and each against a FRAGMENT of the URI
+ * (`…#xywh=0,0,100,100`), which is the other W3C way to target part of a
+ * resource and which an exact match does not catch.  `target.source` is the
+ * W3C SpecificResource.
+ *
+ * KNOWN DIVERGENCE: the server also gathers annotations targeting the entity's
+ * Slug URI, which the client cannot build until it already holds the document.
+ * An entity annotated by slug therefore reads complete on the display path and
+ * short on the editing path.
+ * @param {String} uri the entity URI.
+ * @returns {Array<Object>} clauses for a Mongo-style `$or`.
+ */
+function targetingClauses(uri) {
+    const uris = rerum.httpsIdArray(uri)
+    const fragments = ["http", "https"]
+        .map(scheme => `^${escapeRegex(uri.replace(/^https?/, scheme))}#`)
+        .join("|")
+    return TARGET_KEYS.flatMap(key => [
+        { [key]: uris },
+        { [key]: { "$regex": fragments } }
+    ])
 }
 
 /**
@@ -124,7 +165,7 @@ export async function clientRead(id, { fresh = false } = {}) {
             { "@id": uris },
             {
                 "$and": [
-                    { "$or": [{ "target": uris }, { "target.@id": uris }, { "target.id": uris }] },
+                    { "$or": targetingClauses(uri) },
                     { "__rerum.generatedBy": rerum.generatedBy() }
                 ]
             }
