@@ -3,11 +3,17 @@
  * @author Patrick Cuba <cubap@slu.edu>
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
- * checkMatch and buildValueObject are lifted from the 0.11 UTILS.expand
- * internals; applyAssertions is ported from releases/rc-1.0/js/entities.js
- * with two fixes: the checkMatch guard is un-inverted (rc-1.0 skipped the
- * annotations that DID match) and matching happens against the annotation
- * document, which carries __rerum.generatedBy / creator — the body does not.
+ * buildValueObject is lifted from the 0.11 UTILS.expand internals;
+ * applyAssertions is ported from releases/rc-1.0/js/entities.js.
+ *
+ * Neither this module nor its callers decide WHOSE annotations to merge.  That
+ * filter is part of the read — `?generator=` on the server path, the
+ * `__rerum.generatedBy` clause in expand.clientRead's query on the client one —
+ * so applyAssertions merges exactly what it is handed.  0.11 and rc-1.0 filtered
+ * here instead, with a checkMatch that compared the annotation's generator to
+ * the ENTITY's; that silently disagreed with the server, which has always
+ * compared against the deployment's own agent, whenever an app read an entity
+ * some other app created.
  *
  * shapeValues lives here because both read paths finish with it: the client
  * merge below and the server `/expanded` response in ./expand.js come out
@@ -18,27 +24,7 @@
  */
 
 import config from './config.js'
-import { canonicalId } from './rerum.js'
 import { getValue } from './normalize.js'
-
-/**
- * The client-path filter, and the exact client-side equivalent of the server's
- * `?generator=`.  checkMatch short-circuits on the first property both
- * documents carry, and every RERUM document carries `__rerum.generatedBy`, so
- * anything listed after it is unreachable for RERUM-hosted annotations — which
- * is why this is a single entry rather than the 0.11 pair.  A deployment that
- * genuinely wants to match on `creator` sets config.MATCH_ON; see config.js.
- */
-export const DEFAULT_MATCH_ON = ["__rerum.generatedBy"]
-
-/**
- * The filter actually in force: the deployment's override, else the default.
- * Read per call so configure() takes effect without re-importing anything.
- * @returns {Array<String>} dot-separated property paths for checkMatch.
- */
-export function activeMatchOn() {
-    return config.MATCH_ON ?? DEFAULT_MATCH_ON
-}
 
 /**
  * First-class properties of the entity itself — passed through shaping
@@ -47,7 +33,7 @@ export function activeMatchOn() {
  * entity it creates and never relies on an Annotation to assert them, so an
  * annotation that tries to is either a mistake or someone else redefining what
  * your entity IS and what its properties MEAN.  RERUM is open, so that is not a
- * hypothetical.  checkMatch reads `__rerum` off the document, and `@id`/`id`
+ * hypothetical.  `__rerum` carries the record's provenance, and `@id`/`id`
  * are the primary key, so those must never be wrapped either.  `_id` and
  * `__deleted` are here for the same reason: an Annotation asserting either is
  * claiming to rewrite the record's primary key or to bury it.
@@ -137,54 +123,6 @@ export function requireDocument(doc, context = "This read") {
 }
 
 /**
- * Match on criteria (if exists) and return true if it appears to match on the
- * values specified.  A true result means the incoming assertion is likely to be
- * relevant and authorized to augment the original object.  This is the client
- * fallback for the filtering the server performs with `?generator=` on the
- * display path.
- *
- * Note the short-circuit: the FIRST listed property that both documents carry
- * decides the outcome, and a mismatch there ends the comparison.  Order in
- * matchOn is therefore significant.
- * @param {Object} expanding existing object with values to check.
- * @param {Object} asserting annotation document to compare.
- * @param {Array<String>} matchOn dot-separated property paths to compare.
- * @returns {Boolean} whether the annotation should augment the object.
- */
-export function checkMatch(expanding, asserting, matchOn = activeMatchOn()) {
-    for (const m of matchOn) {
-        let obj_match = m.split('.').reduce((o, i) => o?.[i], expanding)
-        let anno_match = m.split('.').reduce((o, i) => o?.[i], asserting)
-        if (obj_match === undefined || anno_match === undefined) {
-            // Matching is not violated if one of the checked values is missing from a comparator,
-            // but it is not a match without any positive matches.
-            continue
-        }
-        // check for match within Arrays as well
-        if (!Array.isArray(obj_match)) { obj_match = [obj_match] }
-        if (!Array.isArray(anno_match)) { anno_match = [anno_match] }
-        // Agent URIs are recorded with whichever protocol the writing proxy
-        // sent, so compare them the canonical way every other id comparison in
-        // the core layer does.  The server's `?generator=` filter is likewise
-        // protocol-insensitive; this keeps the client fallback in step with it.
-        obj_match = obj_match.map(canonicalId)
-        anno_match = anno_match.map(canonicalId)
-        if (!anno_match.every(item => obj_match.includes(item))) {
-            // Any mismatch (generous typecasting) will return a false result.
-            if (anno_match.some(item => obj_match.includes(item))) {
-                // NOTE: this mismatches if some of the Anno assertion is missing, which
-                // may lead to duplicates downstream.
-                if (config.DEBUG) { console.warn("Incomplete match may require additional handling. ", obj_match, anno_match) }
-            }
-            break
-        }
-        // High confidence this match is affirmative.
-        return true
-    }
-    return false
-}
-
-/**
  * Regularizes assertions to enforce the existence of a `source` key.
  * The return is only the value of the assertion, so the desired key must be
  * applied upstream from the scope of this function.  Survives the heterogeneous
@@ -245,14 +183,16 @@ export function shapeValues(obj) {
  * which is what keeps the create-vs-update trigger working on the editing path.
  * The entity's own values are preserved alongside annotation values, matching
  * the server's `/expanded` merge behavior.
+ * Every annotation handed in IS merged: whose annotations to merge is settled
+ * by the read (see the module note), so pass the annotations a read returned,
+ * never an unfiltered query result.
  * @param {Object} entity the resolved entity document, RAW — pass the fetched
- * document, never an already-shaped one, or `creator` would be a value object
- * where checkMatch expects a URI.
- * @param {Array<Object>} annotations annotation documents targeting the entity.
- * @param {Array<String>} matchOn dot-separated property paths for checkMatch.
+ * document, never an already-shaped one.
+ * @param {Array<Object>} annotations annotation documents targeting the entity,
+ * already filtered to this deployment's.
  * @returns {Object} a new, DEER-shaped object with the assertions applied.
  */
-export function applyAssertions(entity, annotations = [], matchOn = activeMatchOn()) {
+export function applyAssertions(entity, annotations = []) {
     const assertOn = structuredClone(requireDocument(entity, "applyAssertions"))
     for (const anno of annotations) {
         // A superseded annotation asserts nothing.  RERUM mints a new @id on
@@ -261,7 +201,6 @@ export function applyAssertions(entity, annotations = [], matchOn = activeMatchO
         // to leaves, but Entity.Annotations can outlive a write.  0.11 guarded
         // this the same way (deer-utils.js:150).
         if (anno?.__rerum?.history?.next?.length) { continue }
-        if (!checkMatch(entity, anno, matchOn)) { continue }
         // The server emits an assertion for a bare `bodyValue` string, which
         // this path read nothing from at all.  Nothing reported the gap either:
         // the server counts such an annotation as merged, so gathered === merged

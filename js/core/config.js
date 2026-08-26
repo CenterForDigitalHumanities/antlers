@@ -17,9 +17,11 @@ const config = {
         QUERY: "https://tinydev.rerum.io/app/query"
     },
 
-    // URI prefixes that mark an id as RERUM-hosted, and so eligible for the
-    // server-side `/expanded` read path.  TinyNode proxies write *into* RERUM,
-    // so entity ids stay on these bases no matter which proxy a deployment uses.
+    // URI prefixes that mark an id as RERUM-hosted.  DEER reads and writes RERUM
+    // entities only, so this is the support boundary: an id outside these bases
+    // is refused, not served by a fallback.  A deployment on its own RERUM host
+    // MUST list it here.  TinyNode proxies write *into* RERUM, so entity ids
+    // stay on these bases no matter which proxy a deployment uses.
     ID_BASES: [
         "https://store.rerum.io/v1/id/",
         "https://devstore.rerum.io/v1/id/"
@@ -38,23 +40,11 @@ const config = {
     // outside one -- there is no location to borrow.
     BASE: undefined,
 
-    // Client-side annotation filter for the editing read path and the display
-    // path's client fallback.  checkMatch short-circuits: the FIRST listed
-    // property that both the entity and the annotation carry decides the match,
-    // so order matters.  The shipped default is `__rerum.generatedBy` alone,
-    // which is the exact client-side equivalent of the server's `?generator=`
-    // filter -- every RERUM document carries it, so anything listed after it is
-    // unreachable for RERUM-hosted annotations.  A deployment whose annotations
-    // record a meaningful `creator` and whose entities agree may opt in:
-    //   configure({ MATCH_ON: ["creator", "__rerum.generatedBy"] })
-    // Undefined falls back to assertions.DEFAULT_MATCH_ON.
-    MATCH_ON: undefined,
-
     // Query paging defaults, matching the 0.11 QUERY URL parameters.
     LIMIT: 50,
     SKIP: 0,
 
-    // Verbose library logging (missing-value lookups, incomplete checkMatch matches).
+    // Verbose library logging (missing-value lookups, skipped assertions).
     DEBUG: false,
 
     // Injectable fetch for non-browser hosts and live instrumentation; falls back to globalThis.fetch.

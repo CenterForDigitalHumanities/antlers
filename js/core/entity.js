@@ -17,14 +17,36 @@
  * so two consumers of the same deer-id share one object and one fetch (the
  * core-level deer#96 fix) — whichever protocol form each arrived with.  The
  * browser HTTP cache is the only data cache.
+ *
+ * The two strategies are permanent, not scaffolding: `/expanded` does not carry
+ * annotation `@id`s and, by deployment decision, is not going to.  So DEER owns
+ * provenance, and the strategy split is how it does.  Two rules keep that from
+ * leaking into every call site — reserveEditing() declares the editing ids up
+ * front so the upgrade is off the hot path, and Entity#assertionsForEditing is
+ * what a form prefills from so it cannot be handed a display document.
  */
 
+import config from './config.js'
 import * as rerum from './rerum.js'
 import * as expand from './expand.js'
 import { applyAssertions } from './assertions.js'
 
 const EntityMap = new Map()
 const inFlight = new Map()
+
+/**
+ * Ids declared as needing the editing read before anything constructs an Entity
+ * for them.  A form that arrives after a view has already begun a display
+ * resolution can only recover by throwing that read away: `/expanded` returns
+ * the merged document alone, so the RAW entity a client merge needs is not in
+ * it and nothing can be topped up.  Declaring the ids at scan time makes the
+ * upgrade the rare dynamic-insertion case instead of the ordinary one on any
+ * page carrying both a view and a form over the same id.
+ */
+const editingIds = new Set()
+
+/** The EntityMap key for an id string or a document carrying one. */
+const keyOf = (id) => rerum.canonicalId((typeof id === "string") ? id : id?.["@id"] ?? id?.id)
 
 /** The events an Entity announces over its lifetime. */
 const LIFECYCLE = ["update", "reload", "complete", "error"]
@@ -84,22 +106,53 @@ function versionRootId(annotation) {
 }
 
 /**
+ * Declare that these ids will be edited, before any of them has been resolved.
+ * The elements layer calls this once at scan time with every id its forms
+ * carry, so the FIRST read of each is already the editing read and no display
+ * read is paid for and discarded.  An Entity already coordinating a reserved id
+ * is upgraded here instead of at first form contact — the same cost, paid
+ * before a form is waiting on it.
+ *
+ * Reservation is sticky: an id reserved once resolves as editing for the rest
+ * of the session, whatever strategy a later getEntity() asks for.  That is the
+ * safe direction — editing is a superset of display, so a view handed an
+ * editing Entity renders correctly and merely paid too much, while a form
+ * handed a display Entity silently loses every citationSource.
+ * @param {...(String|Object|Array)} ids entity URIs, documents carrying one, or
+ * arrays thereof.
+ * @returns {Number} how many ids were newly reserved.
+ */
+function reserveEditing(...ids) {
+    let reserved = 0
+    for (const id of ids.flat(3)) {
+        const key = keyOf(id)
+        if (typeof key !== "string" || key.length === 0) { continue }
+        if (!editingIds.has(key)) { reserved++ }
+        editingIds.add(key)
+        // Not awaited: reserving is a declaration, not a read.  resolve() never
+        // rejects — a failure lands on the Entity as an `error` event.
+        const existing = EntityMap.get(key)
+        if (existing !== undefined && existing.strategy !== "editing") { existing.upgradeToEditing() }
+    }
+    return reserved
+}
+
+/**
  * The shared way to obtain an Entity: returns the one already coordinating a
  * given id, or constructs (and begins resolving) a new one.
  * @param {String|Object} id the entity URI or an object carrying one.
  * @param {Object} options
  *   `strategy`: "display" (default) reads the cacheable server merge and has no
  *     provenance; "editing" reads the client path and carries every annotation
- *     `@id`.  Views take display, forms take editing.
- *   `lazy`: editing strategy only — resolve with a direct GET plus a separate
- *     targeting-annotation query instead of the single compound query.
+ *     `@id`.  Views take display, forms take editing.  An id passed to
+ *     reserveEditing() is constructed as editing whatever this says.
  *   `upgrade`: when an Entity already exists for this id with a weaker strategy
  *     than requested, re-resolve it as "editing" (the default).  Pass false to
  *     take whatever is already coordinating the id without disturbing it.
  * @returns {Entity}
  */
-function getEntity(id, { lazy = false, strategy = "display", upgrade = true } = {}) {
-    const key = rerum.canonicalId((typeof id === "string") ? id : id?.["@id"] ?? id?.id)
+function getEntity(id, { strategy = "display", upgrade = true } = {}) {
+    const key = keyOf(id)
     const existing = EntityMap.get(key)
     if (existing) {
         // "editing" is a superset of "display": it carries per-annotation
@@ -110,7 +163,11 @@ function getEntity(id, { lazy = false, strategy = "display", upgrade = true } = 
         if (upgrade && strategy === "editing" && existing.strategy !== "editing") { existing.upgradeToEditing() }
         return existing
     }
-    return new Entity((typeof id === "string") ? { id } : id, { lazy, strategy })
+    // A reserved id is an editing id no matter who asks for it first.  The view
+    // that happens to construct it is satisfied by an editing Entity; the form
+    // that reserved it would not be satisfied by a display one.
+    const declared = editingIds.has(key) ? "editing" : strategy
+    return new Entity((typeof id === "string") ? { id } : id, { strategy: declared })
 }
 
 /**
@@ -120,6 +177,7 @@ function getEntity(id, { lazy = false, strategy = "display", upgrade = true } = 
 function clearEntities() {
     EntityMap.clear()
     inFlight.clear()
+    editingIds.clear()
 }
 
 /**
@@ -130,7 +188,6 @@ function clearEntities() {
  * @class
  */
 class Entity extends EventTarget {
-    #isLazy
     #strategy
     #id
     #assertions
@@ -143,9 +200,9 @@ class Entity extends EventTarget {
     /**
      * @param {Object|String} entity object to be described (usually from a JSON-LD
      * document), a JSON string of one, or a bare URI string.
-     * @param {Object} options `strategy` and `lazy`, as described on getEntity().
+     * @param {Object} options `strategy`, as described on getEntity().
      */
-    constructor(entity = {}, { lazy = false, strategy = "display" } = {}) {
+    constructor(entity = {}, { strategy = "display" } = {}) {
         super()
         // accommodate Entity(String) and Entity(Object) or Entity(JSONString)
         if (typeof entity === "string") {
@@ -159,7 +216,6 @@ class Entity extends EventTarget {
         if (typeof id !== "string" || id.length === 0) { throw new Error("Entity must have an id") }
         if (EntityMap.has(rerum.canonicalId(id))) { throw new Error(`Entity ${id} already exists. Use getEntity() to share it.`) }
         this.Annotations = new Map()
-        this.#isLazy = Boolean(lazy)
         this.#strategy = (strategy === "editing") ? "editing" : "display"
         this.#id = id
         this.data = entity
@@ -209,6 +265,32 @@ class Entity extends EventTarget {
         return this.#assertions
     }
 
+    /**
+     * The DEER-shaped view a form prefills from, guaranteed to carry
+     * `source.citationSource` on every merged value.
+     *
+     * A form holding an Entity must prefill through THIS, never by reading
+     * `assertions` directly: that returns whatever strategy the Entity happens
+     * to be on, and a display document has no provenance at all — a form
+     * prefilled from one POSTs a duplicate assertion on save instead of
+     * updating the annotation already there.  The failure is silent and it
+     * corrupts data, so the door is closed here: this method upgrades the
+     * Entity before it answers and awaits the read.  (A form that does not want
+     * Entity coordination reads expand.forEditing instead, which is safe by
+     * construction — it has no strategy to be wrong about.)
+     * @returns {Promise<Object>} the shaped entity, with full provenance.
+     * @throws whatever the resolution failed with — unlike the `error` event, a
+     * form awaiting a prefill must not proceed as though it had one.
+     */
+    async assertionsForEditing() {
+        if (this.#strategy !== "editing" && config.DEBUG) {
+            console.warn(`${this.#id}: upgraded to the editing read on demand, discarding a display read already paid for. Reserve the ids your forms carry with reserveEditing() at scan time so the first read is the right one.`)
+        }
+        await this.upgradeToEditing()
+        if (this.#error !== undefined) { throw this.#error }
+        return this.assertions
+    }
+
     set data(entity) {
         // Adopt a shallow copy so the caller's object is never mutated.
         const candidate = { ...entity }
@@ -244,11 +326,19 @@ class Entity extends EventTarget {
     /**
      * Re-resolve this Entity through the editing path, so its values carry the
      * annotation `@id`s a form needs.  A no-op when it is already an editing
-     * Entity, apart from ensuring a resolution is under way.
+     * Entity, apart from awaiting a resolution already under way.
+     *
+     * Prefer reserveEditing() at scan time: reaching here means a display read
+     * was paid for and is now being discarded.
      * @returns {Promise<void>} settles when the re-resolution has been applied.
      */
     upgradeToEditing() {
-        if (this.#strategy === "editing") { return this.resolve() }
+        if (this.#strategy === "editing") {
+            // Already on the right path.  resolve() would issue a whole new
+            // read of a settled Entity for nothing; only an unsettled one has a
+            // resolution worth waiting on, and resolve() shares that promise.
+            return this.#settled ? Promise.resolve() : this.resolve()
+        }
         this.#strategy = "editing"
         this.#assertions = undefined
         this.#settled = false
@@ -371,7 +461,7 @@ class Entity extends EventTarget {
             // The editing read belongs to expand.clientRead; Entity holds the
             // parts it returns rather than re-deriving them, so there is one
             // implementation of the provenance-critical path, not two.
-            const { entity, annotations } = await expand.clientRead(this.#id, { fresh, lazy: this.#isLazy })
+            const { entity, annotations } = await expand.clientRead(this.#id, { fresh })
             if (generation !== this.#generation) { return }
             this.data = entity
             this.#findAssertions(annotations)
@@ -429,13 +519,25 @@ class Annotation {
             if (!target) { continue }
             target = target.id ?? target["@id"] ?? ((typeof target === "string") ? target : undefined)
             if (!target) { continue }
+            // A backstop, not an expected case.  DEER forms annotate the RERUM
+            // entity they just created, and expand.clientRead now hands over
+            // only annotations this deployment wrote, so every target reaching
+            // here should already be RERUM-hosted.  Should is not is: the reads
+            // REFUSE a non-RERUM id, so an anomalous target would otherwise
+            // construct an Entity that can only fail — a dead EntityMap key and
+            // a spurious `error` event for data nobody asked to load.  The
+            // Annotation is still held by the Entity whose read produced it.
+            if (!rerum.isRerumId(target)) {
+                if (config.DEBUG) { console.warn(`Annotation ${this.id} targets ${target}, which is outside RERUM. Not resolving it; the annotation is still attached to its RERUM targets.`) }
+                continue
+            }
             // Holding Annotation objects only matters to the editing path, so a
             // target discovered this way is created as an editing Entity — but
             // upgrade is off, because a view rendering elsewhere on the page
             // should not be re-read out from under itself as a side effect.
-            getEntity(target, { lazy: true, strategy: "editing", upgrade: false }).attachAnnotation(this)
+            getEntity(target, { strategy: "editing", upgrade: false }).attachAnnotation(this)
         }
     }
 }
 
-export { EntityMap, Entity, Annotation, objectMatch, getEntity, clearEntities }
+export { EntityMap, Entity, Annotation, objectMatch, getEntity, reserveEditing, clearEntities }

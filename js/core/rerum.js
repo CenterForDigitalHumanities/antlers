@@ -83,7 +83,38 @@ export function httpsIdArray(id) {
 }
 
 /**
- * Is this id hosted by RERUM (and so eligible for the server `/expanded` path)?
+ * The deployment's RERUM agent, or a clear failure.  Both reads filter
+ * annotations by it — `/expanded` through `?generator=`, the client query
+ * through `__rerum.generatedBy` — and neither has a safe default: an unfiltered
+ * read merges annotations from every application that ever touched the entity.
+ * @param {String} [generator] explicit override; falls back to config.GENERATOR.
+ * @returns {String} the generator URI.
+ * @throws {TypeError} when no generator is configured.
+ */
+function requireGenerator(generator = config.GENERATOR) {
+    if (!generator) {
+        throw new TypeError("A generator is required. Pass { generator } or set config.GENERATOR — neither read applies a default filter, and an unfiltered read merges annotations from every application that ever targeted the entity.")
+    }
+    return generator
+}
+
+/**
+ * The query clause matching this deployment's annotations, in both protocol
+ * forms.  The client-path equivalent of the server's `?generator=`, and applied
+ * in the QUERY rather than after it: RERUM is shared, so another application's
+ * annotations targeting the same entity would otherwise fill the page and crowd
+ * out the ones this deployment actually merges.
+ * @param {String} [generator] explicit override; falls back to config.GENERATOR.
+ * @returns {Object} a Mongo-style `$in` clause over the http and https forms.
+ * @throws {TypeError} when no generator is configured.
+ */
+export function generatedBy(generator) {
+    return httpsIdArray(requireGenerator(generator))
+}
+
+/**
+ * Is this id hosted by RERUM?  DEER supports nothing else, so this is the
+ * support gate, not a branch selector — expand.js refuses an id that fails it.
  * Independent of which TinyNode proxy handles writes — proxies write into
  * RERUM, so entity ids stay on config.ID_BASES.
  * @param {String} id the URI to test.
@@ -117,11 +148,18 @@ function absoluteUrl(url) {
 /**
  * Record that a write invalidated these URIs.  Existing refresh bookkeeping for
  * a URI is discarded, so a second write re-invalidates every URL again.
+ *
+ * Non-RERUM URIs are skipped.  DEER writes annotations targeting the RERUM
+ * entities it created, so this should never fire; it costs one comparison to
+ * make sure an anomalous target cannot take a STALE_LIMIT slot that can never
+ * be spent — this module would never read that URI — and eventually evict a
+ * real invalidation.
  */
 function markStale(...ids) {
     for (const id of ids.flat(3)) {
         const uri = (typeof id === "string") ? id : (id?.["@id"] ?? id?.id)
         if (typeof uri !== "string" || uri.length === 0) { continue }
+        if (!isRerumId(uri)) { continue }
         staleIds.set(canonicalId(uri), new Set())
         // Map preserves insertion order, so the first key is the oldest.
         if (staleIds.size > STALE_LIMIT) { staleIds.delete(staleIds.keys().next().value) }
@@ -145,6 +183,24 @@ function needsReload(uri, url) {
     return true
 }
 
+/**
+ * Read a non-negative integer count header.  `headers.get()` returns null for a
+ * header the deployment never sent and `Number(null)` is 0, so coercing
+ * directly turns "the server told me nothing" into "it merged 0 of 0" — which
+ * is indistinguishable from a clean merge, and silently disarms the only check
+ * the display read has.  Absent, blank, and unparseable all return null so a
+ * caller can tell unknown from known.
+ * @param {Headers} headers the response headers.
+ * @param {String} name the header to read.
+ * @returns {Number|null} the count, or null when it cannot be known.
+ */
+function countHeader(headers, name) {
+    const raw = headers.get(name)
+    if (raw === null || raw.trim() === "") { return null }
+    const count = Number(raw)
+    return (Number.isInteger(count) && count >= 0) ? count : null
+}
+
 async function handleResponse(response) {
     if (!response.ok) {
         throw Object.assign(
@@ -155,8 +211,8 @@ async function handleResponse(response) {
     try {
         return await response.json()
     } catch (err) {
-        // A foreign URI is not obliged to serve JSON.  Say which URI and what it
-        // sent instead of surfacing the parser's "Unexpected token '<'".
+        // A misrouted proxy or an error page serves HTML, not JSON.  Say which
+        // URI and what it sent instead of the parser's "Unexpected token '<'".
         throw Object.assign(
             new Error(`Expected JSON from ${response.url} but the body could not be parsed (content-type: ${response.headers.get("content-type") ?? "none"}).`),
             { status: response.status, url: response.url, cause: err }
@@ -189,25 +245,24 @@ export function resolve(id, { fresh = false } = {}) {
  * @param {String|Object} id the entity URI (or an object carrying one).
  * @param {Object} options `generator` (RERUM agent URI), `fresh` (bust HTTP cache).
  * @returns {Promise<Object>} `{document, gathered, merged}`.  The counts come
- * from the `Annotations-Gathered` / `Annotations-Merged` response headers and
- * are NaN if a deployment does not send them.  They disagree when the server
- * declined to merge something it found, which callers must handle — the server
- * merges only single-key object bodies.  The document itself carries no
- * annotation `@id`s, so this read has no provenance.
+ * from the `Annotations-Gathered` / `Annotations-Merged` response headers, and
+ * are `null` when the deployment did not send them or sent something
+ * unparseable — the caller must treat that as unknown, never as agreement.
+ * They disagree when the server declined to merge something it found, which
+ * callers must handle — the server merges only single-key object bodies.  The
+ * document itself carries no annotation `@id`s, so this read has no
+ * provenance.
  */
-export async function expanded(id, { generator = config.GENERATOR, fresh = false } = {}) {
-    if (!generator) {
-        throw new TypeError("expanded() requires a generator. Pass { generator } or set config.GENERATOR — the server applies no default filter and would merge annotations from every application.")
-    }
+export async function expanded(id, { generator, fresh = false } = {}) {
     const uri = canonicalId(idOf(id))
-    const url = `${uri}/expanded?generator=${encodeURIComponent(generator)}`
+    const url = `${uri}/expanded?generator=${encodeURIComponent(requireGenerator(generator))}`
     const reload = needsReload(uri, url) || fresh
     const response = await fetcher(url, reload ? { cache: "reload" } : {})
     const document = await handleResponse(response)
     return {
         document,
-        gathered: Number(response.headers.get("Annotations-Gathered")),
-        merged: Number(response.headers.get("Annotations-Merged"))
+        gathered: countHeader(response.headers, "Annotations-Gathered"),
+        merged: countHeader(response.headers, "Annotations-Merged")
     }
 }
 
@@ -230,32 +285,6 @@ export async function query(body, { limit = config.LIMIT, skip = config.SKIP } =
         headers: JSON_HEADERS,
         body: JSON.stringify(body)
     }).then(handleResponse)
-}
-
-/**
- * Query for the leaf-version annotations targeting an id, matching every
- * target style the 0.11 runtime matched (`target`, `target.@id`, `target.id`)
- * in both protocol forms.
- * @param {String|Object} id URI of the targeted entity.
- * @param {Object} options passed through to query().
- * @returns {Promise<Array<Object>>} targeting documents (callers filter to Annotation types).
- */
-export async function findByTargetId(id, options = {}) {
-    const uri = idOf(id)
-    const uris = httpsIdArray(uri)
-    const body = {
-        "$or": [{ "target": uris }, { "target.@id": uris }, { "target.id": uris }],
-        "__rerum.history.next": { "$exists": true, "$size": 0 }
-    }
-    const limit = options.limit ?? config.LIMIT
-    const finds = await query(body, { ...options, limit })
-    if (Array.isArray(finds) && finds.length >= limit) {
-        // Not gated behind DEBUG: a dropped annotation costs the editing path a
-        // citationSource, and a missing citationSource makes the next save POST
-        // a duplicate assertion instead of updating the existing one.
-        console.warn(`${uri}: annotation query returned a full page (limit ${limit}). Annotations beyond the limit are not merged and their provenance is lost — a form prefilled from this read may create duplicate assertions.`)
-    }
-    return finds
 }
 
 function write(url, method, obj) {
