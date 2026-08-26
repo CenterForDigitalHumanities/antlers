@@ -35,6 +35,13 @@ const staleIds = new Map()
  * How many distinct request URLs one invalidated URI is read through: the
  * document itself, and its `/expanded` merge.  Once both have been refreshed
  * the invalidation is spent and the entry is dropped.
+ *
+ * INVARIANT: exactly two, and that holds only because the generator is fixed at
+ * config.GENERATOR with no per-call override (see requireGenerator).  A second
+ * generator would mint a third `/expanded` URL, the count would be spent before
+ * that one revalidated, and the first read after a write would be served from a
+ * stale cache entry.  If the generator ever becomes per-call, this constant is
+ * wrong and the bookkeeping has to expire on a timestamp instead of a count.
  */
 const STALE_URL_FORMS = 2
 
@@ -83,19 +90,24 @@ export function httpsIdArray(id) {
 }
 
 /**
- * The deployment's RERUM agent, or a clear failure.  Both reads filter
- * annotations by it — `/expanded` through `?generator=`, the client query
- * through `__rerum.generatedBy` — and neither has a safe default: an unfiltered
- * read merges annotations from every application that ever touched the entity.
- * @param {String} [generator] explicit override; falls back to config.GENERATOR.
+ * The deployment's RERUM agent, or a clear failure.  DEER has exactly ONE:
+ * config.GENERATOR.  Every read filters annotations by it — `/expanded` through
+ * `?generator=`, the client query through `__rerum.generatedBy` — and there is
+ * deliberately no per-call override.  A read that could be filtered by some
+ * other agent is a read whose two paths can disagree about whose annotations
+ * they merged: the server path would honour the override and the client
+ * fallback would not, so the same call would return two different documents
+ * depending on a branch the caller cannot see.  An unfiltered read is worse
+ * still — it merges annotations from every application that ever touched the
+ * entity.  Do not reintroduce an override parameter.
  * @returns {String} the generator URI.
  * @throws {TypeError} when no generator is configured.
  */
-function requireGenerator(generator = config.GENERATOR) {
-    if (!generator) {
-        throw new TypeError("A generator is required. Pass { generator } or set config.GENERATOR — neither read applies a default filter, and an unfiltered read merges annotations from every application that ever targeted the entity.")
+function requireGenerator() {
+    if (!config.GENERATOR) {
+        throw new TypeError("A generator is required. Set config.GENERATOR — no read applies a default filter, and an unfiltered read merges annotations from every application that ever targeted the entity.")
     }
-    return generator
+    return config.GENERATOR
 }
 
 /**
@@ -104,12 +116,11 @@ function requireGenerator(generator = config.GENERATOR) {
  * in the QUERY rather than after it: RERUM is shared, so another application's
  * annotations targeting the same entity would otherwise fill the page and crowd
  * out the ones this deployment actually merges.
- * @param {String} [generator] explicit override; falls back to config.GENERATOR.
  * @returns {Object} a Mongo-style `$in` clause over the http and https forms.
  * @throws {TypeError} when no generator is configured.
  */
-export function generatedBy(generator) {
-    return httpsIdArray(requireGenerator(generator))
+export function generatedBy() {
+    return httpsIdArray(requireGenerator())
 }
 
 /**
@@ -225,9 +236,11 @@ async function handleResponse(response) {
  * @param {String|Object} id the document URI (or an object carrying one).
  * @param {Object} options `fresh: true` busts the HTTP cache.  A read that
  * follows a write of this URI busts it automatically.
- * @returns {Promise<Object>} the document.
+ * @returns {Promise<Object>} the document.  Rejects rather than throwing
+ * synchronously on an unusable id, matching every other read on this module —
+ * a mixed contract is what breaks a caller batching these under Promise.all.
  */
-export function resolve(id, { fresh = false } = {}) {
+export async function resolve(id, { fresh = false } = {}) {
     const uri = canonicalId(idOf(id))
     // needsReload first: short-circuiting past it on an explicit fresh read
     // leaves the invalidation unspent, so the NEXT ordinary read of this URL
@@ -238,12 +251,12 @@ export function resolve(id, { fresh = false } = {}) {
 
 /**
  * GET the server-side annotation merge for a RERUM-hosted entity.
- * `generator` is REQUIRED: the server applies no default filter, and an
- * unfiltered request merges annotations from every application that ever
- * targeted the entity.  Resolution order: explicit argument, else
- * config.GENERATOR.  Do not simplify this requirement away.
+ * `generator` is REQUIRED and is always config.GENERATOR: the server applies no
+ * default filter, and an unfiltered request merges annotations from every
+ * application that ever targeted the entity.  Do not simplify this requirement
+ * away, and do not add a per-call override — see requireGenerator.
  * @param {String|Object} id the entity URI (or an object carrying one).
- * @param {Object} options `generator` (RERUM agent URI), `fresh` (bust HTTP cache).
+ * @param {Object} options `fresh` (bust HTTP cache).
  * @returns {Promise<Object>} `{document, gathered, merged}`.  The counts come
  * from the `Annotations-Gathered` / `Annotations-Merged` response headers, and
  * are `null` when the deployment did not send them or sent something
@@ -253,9 +266,9 @@ export function resolve(id, { fresh = false } = {}) {
  * document itself carries no annotation `@id`s, so this read has no
  * provenance.
  */
-export async function expanded(id, { generator, fresh = false } = {}) {
+export async function expanded(id, { fresh = false } = {}) {
     const uri = canonicalId(idOf(id))
-    const url = `${uri}/expanded?generator=${encodeURIComponent(requireGenerator(generator))}`
+    const url = `${uri}/expanded?generator=${encodeURIComponent(requireGenerator())}`
     const reload = needsReload(uri, url) || fresh
     const response = await fetcher(url, reload ? { cache: "reload" } : {})
     const document = await handleResponse(response)

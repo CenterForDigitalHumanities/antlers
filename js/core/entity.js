@@ -60,6 +60,11 @@ const LIFECYCLE = ["update", "reload", "complete", "error"]
  * @returns {Boolean} whether the two match key-for-key.
  */
 function objectMatch(o1 = {}, o2 = {}) {
+    // An array and an object with numeric keys produce identical Object.keys, so
+    // without this `["a"]` and `{0: "a"}` compare equal — and since this drives
+    // the no-op suppression in `set data`, a real change would be swallowed and
+    // no `update` would ever announce.
+    if (Array.isArray(o1) !== Array.isArray(o2)) { return false }
     const keys1 = Object.keys(o1)
     const keys2 = Object.keys(o2)
     if (keys1.length !== keys2.length) { return false }
@@ -76,6 +81,22 @@ function objectMatch(o1 = {}, o2 = {}) {
     function isObject(object) {
         return object != null && typeof object === 'object'
     }
+}
+
+/**
+ * Freeze an object and everything reachable from it.  Object.freeze is shallow
+ * and the interesting mutation is a nested one — `assertions.name.value = …`
+ * reaches straight past a shallow freeze.  Freezing before recursing makes this
+ * safe on a self-referential document: the cycle is already frozen when it comes
+ * back around.
+ * @param {any} value the value to freeze, in place.
+ * @returns {any} the same value, frozen.
+ */
+function deepFreeze(value) {
+    if (value === null || typeof value !== "object" || Object.isFrozen(value)) { return value }
+    Object.freeze(value)
+    for (const key of Object.getOwnPropertyNames(value)) { deepFreeze(value[key]) }
+    return value
 }
 
 /**
@@ -255,12 +276,20 @@ class Entity extends EventTarget {
             // The display read comes back already shaped by expand.forDisplay
             // and has no annotations to merge; only the editing read does.
             // Cloned, not aliased: the display read is already shaped, so
-            // returning _data itself would let any subscriber mutating
-            // detail.payload corrupt the Entity for every other subscriber.
+            // returning _data itself would hand out the Entity's own document.
             // The editing branch already returns a fresh object.
-            this.#assertions = (this.#strategy === "display")
+            //
+            // Frozen because the memo is SHARED, which the clone alone does not
+            // address: every subscriber — including the ones subscribe() catches
+            // up after settling — receives this same object as detail.payload,
+            // so one of them mutating it corrupts the value all the others were
+            // given.  Cloning per read would fix that too, but it defeats the
+            // memo, which exists because recomputing means a structuredClone and
+            // a full merge on every read.  Freezing keeps one object and turns
+            // the corruption into a throw.
+            this.#assertions = deepFreeze((this.#strategy === "display")
                 ? structuredClone(this._data)
-                : applyAssertions(this._data, [...this.Annotations.values()].map(a => a.data))
+                : applyAssertions(this._data, [...this.Annotations.values()].map(a => a.data)))
         }
         return this.#assertions
     }

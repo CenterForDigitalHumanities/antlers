@@ -5,7 +5,8 @@
  *
  * Ported from the 0.11 UTILS.getValue / UTILS.getLabel with four behavioral
  * fixes: a failed type cast now throws to the caller instead of being swallowed
- * by a `finally { return … }`, null input is treated as missing instead of
+ * by a `finally { return … }` — including the NaN that parseFloat/parseInt
+ * return in place of throwing — null input is treated as missing instead of
  * crashing the peek loop, the BOOLEAN cast is no longer inverted, and `asType`
  * is applied to every member of an array instead of being skipped entirely.
  */
@@ -20,14 +21,17 @@ import config from './config.js'
  * @throws {Error} when the cast is not possible for this value.
  */
 function castValue(prop, asType) {
+    let cast
     try {
         switch (asType.toUpperCase()) {
             case "STRING":
                 return prop.toString()
             case "NUMBER":
-                return parseFloat(prop)
+                cast = parseFloat(prop)
+                break
             case "INTEGER":
-                return parseInt(prop)
+                cast = parseInt(prop)
+                break
             case "BOOLEAN":
                 return !["false", "no", "0", "", "undefined", "null"].includes(String(prop).toLowerCase().trim())
             default:
@@ -36,6 +40,15 @@ function castValue(prop, asType) {
     } catch (err) {
         throw new Error(`asType: '${asType}' is not possible.\n${err.message}`)
     }
+    // parseFloat/parseInt report failure by RETURNING NaN rather than throwing,
+    // so the catch above never sees it and a NaN would flow out to whatever
+    // renders it.  A requested cast that cannot be performed is an error like
+    // any other.  Checked out here, not inside the try, so the message is the
+    // plain one rather than the catch's wrapped rewrite of it.
+    if (Number.isNaN(cast)) {
+        throw new Error(`asType: '${asType}' is not possible for ${JSON.stringify(prop)}.`)
+    }
+    return cast
 }
 
 /**

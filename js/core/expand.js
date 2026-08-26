@@ -145,14 +145,17 @@ export async function clientRead(id, { fresh = false } = {}) {
  * Resolve an entity for display: the server-side annotation merge.  Cacheable
  * (the server sends max-age=86400, must-revalidate) and carries no annotation
  * provenance.
+ * There is no `generator` option.  DEER filters every read by the one agent in
+ * config.GENERATOR, so the server request and the client fallback below always
+ * merge the same annotations — an override would let those two branches
+ * disagree, and which branch runs is not something the caller controls.
  * @param {String|Object} id the entity URI or an object carrying one.
- * @param {Object} options `generator` overrides config.GENERATOR;
- * `fresh: true` busts the HTTP cache (read-after-write).
+ * @param {Object} options `fresh: true` busts the HTTP cache (read-after-write).
  * @returns {Promise<Object>} DEER-shaped entity: asserted properties become
  * `{value, source, evidence}` objects (arrays thereof when multivalued).
  * @throws {TypeError} when the id is not RERUM-hosted.
  */
-export async function forDisplay(id, { generator, fresh = false } = {}) {
+export async function forDisplay(id, { fresh = false } = {}) {
     const uri = rerum.idOf(id)
     requireRerumId(uri)
     // ONE cacheable GET.  The server's PROTECTED_EXPANSION_KEYS now covers
@@ -161,7 +164,7 @@ export async function forDisplay(id, { generator, fresh = false } = {}) {
     // stands.  Before that (rerum_server_nodejs, Aug 2026) this path had to
     // fetch the entity document alongside the merge and restore those keys from
     // it, which cost a second request on every display read.
-    const { document, gathered, merged } = await rerum.expanded(uri, { generator, fresh })
+    const { document, gathered, merged } = await rerum.expanded(uri, { fresh })
     if (gathered === null || merged === null) {
         // Unknown is not agreement.  Without the counts nothing can tell a
         // complete merge from one that silently dropped assertions, and the
