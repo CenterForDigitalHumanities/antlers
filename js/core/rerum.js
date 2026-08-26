@@ -133,8 +133,26 @@ export function generatedBy() {
  */
 export function isRerumId(id) {
     if (typeof id !== "string") { return false }
-    const httpsId = canonicalId(id)
-    return config.ID_BASES.some(base => httpsId.startsWith(base))
+    let url
+    try {
+        url = new URL(canonicalId(id))
+    } catch {
+        return false
+    }
+    // A RERUM id is a bare document URI.  A query string or fragment on one is
+    // not a variant of it, and letting one through corrupts the read: expanded()
+    // appends `/expanded?generator=` by concatenation, so `…/id/abc?x=1` builds
+    // `…/id/abc?x=1/expanded?generator=…` — the `/expanded` segment lands inside
+    // the QUERY STRING and the request silently resolves the plain entity
+    // instead of its merge, with no merge-count headers to notice it by.
+    if (url.search || url.hash) { return false }
+    // Tested against the NORMALIZED href, never the raw string.  `new URL`
+    // resolves `..` segments, so a raw prefix test accepts
+    // `…/v1/id/../../v1/query`, which fetch then sends to a different endpoint
+    // on the same host.  RERUM is open — an annotation `target` is attacker-
+    // supplied data, and Annotation#registerTargets reads ids straight out of
+    // one — so the id that passes this gate must be the id that gets requested.
+    return config.ID_BASES.some(base => url.href.startsWith(base))
 }
 
 /**
@@ -268,6 +286,14 @@ export async function resolve(id, { fresh = false } = {}) {
  */
 export async function expanded(id, { fresh = false } = {}) {
     const uri = canonicalId(idOf(id))
+    // Gate here, not only in expand.forDisplay: this is exported, and the URL
+    // below is built by concatenation, so an id carrying a query string or a
+    // `..` segment would produce a request that succeeds against the WRONG
+    // resource rather than failing.  Only a RERUM id has an `/expanded` merge
+    // at all, so refusing anything else costs nothing.
+    if (!isRerumId(uri)) {
+        throw new TypeError(`${uri} is not a RERUM document id, so it has no /expanded merge. Ids must be bare URIs on config.ID_BASES (currently ${JSON.stringify(config.ID_BASES)}) — no query string, no fragment.`)
+    }
     const url = `${uri}/expanded?generator=${encodeURIComponent(requireGenerator())}`
     const reload = needsReload(uri, url) || fresh
     const response = await fetcher(url, reload ? { cache: "reload" } : {})

@@ -181,7 +181,17 @@ function getEntity(id, { strategy = "display", upgrade = true } = {}) {
         // consumer must upgrade a display Entity — being handed one silently is
         // how a form loses its create-vs-update trigger — while a display
         // consumer is satisfied by an editing Entity as it stands.
-        if (upgrade && strategy === "editing" && existing.strategy !== "editing") { existing.upgradeToEditing() }
+        if (upgrade && strategy === "editing" && existing.strategy !== "editing") {
+            // Already a full re-read, which covers the failed case below too.
+            existing.upgradeToEditing()
+            return existing
+        }
+        // A resolution that FAILED is not an answer, and nothing else would
+        // ever ask again.  Without this a single transient network blip poisons
+        // that id for the life of the page: the failed Entity stays in the map
+        // and every later consumer is handed it, error and all.  Concurrent
+        // callers do not stampede — resolve() shares one in-flight promise.
+        if (existing.settled && existing.error !== undefined) { existing.resolve({ fresh: true }) }
         return existing
     }
     // A reserved id is an editing id no matter who asks for it first.  The view
@@ -217,6 +227,9 @@ class Entity extends EventTarget {
     // Bumped whenever the strategy changes under an in-flight resolution, so
     // that resolution can tell its result is no longer wanted.
     #generation = 0
+    // True only while an editing resolution is between writing the raw entity
+    // and merging its annotations.  See `set data`.
+    #merging = false
 
     /**
      * @param {Object|String} entity object to be described (usually from a JSON-LD
@@ -233,7 +246,12 @@ class Entity extends EventTarget {
                 entity = { id: entity }
             }
         }
-        const id = entity.id ?? entity["@id"] // id is primary key
+        // `@id` before `id`, the same order keyOf, rerum.idOf, `set data`,
+        // Annotation#id and clientRead's isSelf all use.  Reversed, this method
+        // checked the map under one key and registered under the other, and a
+        // document carrying both — `{"@id": "…", id: 12345}` — was rejected as
+        // having no id at all.
+        const id = entity["@id"] ?? entity.id // @id is primary key
         if (typeof id !== "string" || id.length === 0) { throw new Error("Entity must have an id") }
         if (EntityMap.has(rerum.canonicalId(id))) { throw new Error(`Entity ${id} already exists. Use getEntity() to share it.`) }
         this.Annotations = new Map()
@@ -250,6 +268,14 @@ class Entity extends EventTarget {
     /** True once a resolution has finished, successfully or not. */
     get settled() {
         return this.#settled
+    }
+
+    /**
+     * What the last resolution failed with, or undefined if it succeeded.
+     * Read with `settled` to tell "failed" from "still resolving".
+     */
+    get error() {
+        return this.#error
     }
 
     /**
@@ -336,7 +362,16 @@ class Entity extends EventTarget {
         // this same Entity on purpose — consumers that arrived with the old URI
         // keep resolving to it rather than constructing a second object.
         EntityMap.set(rerum.canonicalId(this.#id), this)
-        this.#announce("update", this.assertions)
+        // Silent while an editing resolution is mid-merge.  The raw entity
+        // without its annotations is not a smaller version of the answer, it is
+        // a document with NO PROVENANCE IN IT — same DEER shape, fewer keys, no
+        // `source.citationSource` anywhere — and nothing on the event or the
+        // Entity distinguishes it from a finished one (`settled` is false for
+        // both).  A form prefilling on that `update` POSTs a duplicate
+        // assertion on every save instead of updating the annotation already
+        // there: silent corruption, which is what this rewrite exists to end.
+        // #findAssertions announces once, after the merge.
+        if (!this.#merging) { this.#announce("update", this.assertions) }
         if (isFirstData) {
             // Construction begins resolution.  That is a first render, not a
             // reload, and the two must stay distinguishable.
@@ -348,7 +383,12 @@ class Entity extends EventTarget {
             // subscribers to repaint — but only if that resolution produced
             // something.  A failed resolve leaves the stub behind, and painting
             // it over good data is worse than not repainting at all.
-            this.resolve().then(() => { if (this.#error === undefined) { this.#announce("reload", this) } })
+            // The shaped document, matching what `update` carries.  subscribe()
+            // hands every lifecycle event to one handler, so a payload that is
+            // sometimes an Entity and sometimes a document means any consumer
+            // reading `detail.payload.name` works for one event and breaks on
+            // the other.
+            this.resolve().then(() => { if (this.#error === undefined) { this.#announce("reload", this.assertions) } })
         }
     }
 
@@ -454,6 +494,11 @@ class Entity extends EventTarget {
         // lands.  upgradeToEditing() already had that property and subscribe()
         // covers it — `complete` fires when the winning resolution applies.
         this.#generation++
+        // Retrying a FAILED resolution un-settles it, so a subscriber arriving
+        // mid-retry waits for the real answer.  Left settled, subscribe() would
+        // catch it up with the stub the failure left behind and announce
+        // `complete` over it — an empty entity presented as a finished one.
+        if (this.#error !== undefined) { this.#settled = false }
         const promise = this.#resolveURI(fresh)
             .finally(() => { if (inFlight.get(key)?.promise === promise) { inFlight.delete(key) } })
         inFlight.set(key, { promise, fresh })
@@ -486,16 +531,18 @@ class Entity extends EventTarget {
      * @param {Array<Object>} annotations annotation documents targeting this id.
      */
     #findAssertions = (annotations) => {
-        const previousCount = this.Annotations.size
         this.Annotations = new Map()
-        let attached = 0
         for (const anno of annotations) {
-            if (this.attachAnnotation(new Annotation(anno))) { attached++ }
+            this.attachAnnotation(new Annotation(anno))
         }
-        // Announce on removal too: a view told nothing keeps rendering a value
-        // this read says is gone.  `attached` alone cannot see that case, since
-        // a read returning no annotations attaches none.
-        if (attached || previousCount !== this.Annotations.size) { this.#announce("update", this.assertions) }
+        // Unconditional, and it has to be: `set data` stays silent through the
+        // merge now, so this is the ONLY `update` an editing resolution emits.
+        // The old guard ("did anything attach, did the count move") also missed
+        // two real cases — a read whose annotations are unchanged but whose
+        // ENTITY document changed, and a read that returns no annotations for
+        // an entity that had none, which still has to tell its subscribers the
+        // resolution produced something.
+        this.#announce("update", this.assertions)
         this.#settled = true
         this.#announce("complete")
     }
@@ -526,7 +573,16 @@ class Entity extends EventTarget {
             // implementation of the provenance-critical path, not two.
             const { entity, annotations } = await expand.clientRead(this.#id, { fresh })
             if (generation !== this.#generation) { return }
-            this.data = entity
+            // Held across `set data` so it cannot announce a half-merged
+            // document; #findAssertions announces the finished one.  try/finally
+            // because a throw out of `set data` must not leave the flag set and
+            // silence every later announcement on this Entity.
+            this.#merging = true
+            try {
+                this.data = entity
+            } finally {
+                this.#merging = false
+            }
             this.#findAssertions(annotations)
         } catch (err) {
             if (generation !== this.#generation) { return }
@@ -580,7 +636,7 @@ class Annotation {
         if (!Array.isArray(targets)) { targets = [targets] }
         for (let target of targets) {
             if (!target) { continue }
-            target = target.id ?? target["@id"] ?? ((typeof target === "string") ? target : undefined)
+            target = target["@id"] ?? target.id ?? ((typeof target === "string") ? target : undefined)
             if (!target) { continue }
             // A backstop, not an expected case.  DEER forms annotate the RERUM
             // entity they just created, and expand.clientRead now hands over

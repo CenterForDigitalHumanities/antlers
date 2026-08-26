@@ -112,6 +112,12 @@ export function getLabel(obj, noLabel = "[ unlabeled ]", options = {}) {
     let label = obj[options.label] || obj.name || obj.label || obj.title
     if (Array.isArray(label)) {
         label = [...new Set(label.map(l => getValue(l)))]
+        // Returned here rather than falling through to `label || noLabel`: an
+        // empty array is TRUTHY, so that test hands back `[]` and a template
+        // binding it renders an empty string with nothing to say the label is
+        // missing.  No members is no label.  (Falling through was also a no-op
+        // otherwise — getValue returns an array unchanged.)
+        return label.length ? label : noLabel
     }
     if (typeof label === "object") {
         label = getValue(label)

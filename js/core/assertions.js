@@ -159,6 +159,65 @@ export function buildValueObject(val, fromAnno = {}) {
 }
 
 /**
+ * The RERUM `_id` a document is stored under: the last path segment of its URI.
+ * That is literally what the server matches on — `GET /v1/id/:_id/expanded`
+ * looks the record up by this segment.
+ * @param {Object} doc a raw RERUM document.
+ * @returns {String} the storage id, or "" when there is no usable URI.
+ */
+function storageId(doc) {
+    const id = doc?.["@id"] ?? doc?.id
+    return (typeof id === "string") ? id.slice(id.lastIndexOf("/") + 1) : ""
+}
+
+/**
+ * Merge annotations oldest assertion first.
+ *
+ * The reason is chronology, not agreement with the server. A RERUM `_id` is a
+ * Mongo ObjectId, whose leading four bytes are a creation timestamp, and
+ * `@id` is minted as `RERUM_ID_PREFIX + _id` (crud.js), so the last path
+ * segment of an annotation's URI sorts it by when it was asserted. "In the
+ * order someone said it" is the only ordering this data actually carries, and
+ * a merged property is otherwise a set with an accidental order.
+ *
+ * Merging in raw `POST /query` order got this measurably wrong, not merely
+ * differently: on `5d7ba417e4b07f0c56c0f539`, `doubling` came back
+ * `["The second of two", "The first of two"]` — values that name their own
+ * order, reversed. Mongo promises no order, and it is worth being precise about
+ * what that means here: the unsorted order proved STABLE across repeated reads
+ * and across page limits, so this was never flapping between renders. It was
+ * consistently arbitrary, which is harder to notice.
+ *
+ * Cross-path agreement then follows as a consequence rather than a goal.
+ * `findLeafAnnotationsFor` (rerum_server_nodejs/controllers/utils.js) sorts its
+ * matches by `String(_id)` for a reason of its own — a stable ETag, so a
+ * revalidation can answer 304 — and `crud.js` merges that array in order. Both
+ * sides independently choose creation order, so the two reads assemble the same
+ * document.
+ *
+ * That independence is the point, and it is why this is NOT written as "keep in
+ * step with the server". If `/expanded` ever reorders its gather, DEER's output
+ * stays chronological, stable, and self-consistent; only agreement with the
+ * server degrades, and it degrades into a visible ordering difference rather
+ * than into corrupted values. Do not change this rule to chase the server's.
+ *
+ * Sorting the bare storage id rather than the whole URI is deliberate: the
+ * server compares bare `_id`s, so on a deployment listing more than one entry
+ * in config.ID_BASES a full-URI sort would group by host before it sorted by
+ * time.
+ * @param {Array<Object>} annotations annotation documents, unordered.
+ * @returns {Array<Object>} a new array, oldest assertion first.
+ */
+function inAssertionOrder(annotations) {
+    return [...annotations].sort((a, b) => {
+        const left = storageId(a)
+        const right = storageId(b)
+        if (left < right) { return -1 }
+        return (left > right) ? 1 : 0
+    })
+}
+
+/**
  * Wrap every asserted value on a document in DEER's `{value, source, evidence}`
  * shape, leaving identity keys alone.  Both read paths end here, so consumers
  * get one rule: a non-identity value is a value object, or an array of value
@@ -203,7 +262,14 @@ export function shapeValues(obj) {
  */
 export function applyAssertions(entity, annotations = []) {
     const assertOn = structuredClone(requireDocument(entity, "applyAssertions"))
-    for (const anno of annotations) {
+    // Oldest assertion first, not the order the query happened to return them
+    // in — see inAssertionOrder.  Sorted here rather than in expand.clientRead
+    // because this is the single funnel both editing consumers reach:
+    // clientMerge, and Entity#assertions re-merging from Entity.Annotations.
+    // That Map is keyed by version chain and preserves INSERTION order, so an
+    // updated annotation would otherwise hold the position its superseded
+    // version had — its edit would sort as though it were the original.
+    for (const anno of inAssertionOrder(annotations)) {
         // A superseded annotation asserts nothing.  RERUM mints a new @id on
         // update, so a stale version merged beside its replacement would yield
         // two conflicting values and two citationSources.  The queries filter
