@@ -441,6 +441,19 @@ class Entity extends EventTarget {
         // A pending non-fresh resolution cannot satisfy a fresh request —
         // read-after-write must never be served a stale in-flight promise.
         if (pending && (pending.fresh || !fresh)) { return pending.promise }
+        // Starting a new resolution retires every older one.  The only way to
+        // reach here with one already in flight is a fresh request overtaking a
+        // non-fresh one, so newest-started is always the one that should win.
+        // Without this the older read lands second, writes its pre-write
+        // document into _data and announces `update` with it — painting stale
+        // data over the save that the fresh read was issued to pick up.
+        // Must come AFTER the early return above: bumping before it would
+        // invalidate the very resolution that return is handing back.
+        //
+        // A caller awaiting the RETIRED promise now settles before the new data
+        // lands.  upgradeToEditing() already had that property and subscribe()
+        // covers it — `complete` fires when the winning resolution applies.
+        this.#generation++
         const promise = this.#resolveURI(fresh)
             .finally(() => { if (inFlight.get(key)?.promise === promise) { inFlight.delete(key) } })
         inFlight.set(key, { promise, fresh })
@@ -454,14 +467,35 @@ class Entity extends EventTarget {
      * honest, because attachAnnotation reports whether THIS Entity could key
      * on it.  Documents are already filtered to Annotation types by
      * expand.clientRead.
+     *
+     * The read is AUTHORITATIVE: it returns every annotation this deployment has
+     * against the entity, so the Map is rebuilt rather than added to.  Anything
+     * held from an earlier read that this one did not return has been deleted,
+     * retargeted, or has stopped matching the generator filter, and merging it
+     * again resurrects a value the data no longer asserts.  Version-chain keying
+     * (see versionRootId) already stops a SUPERSEDED annotation accumulating
+     * beside its replacement; this is the removal half of the same problem.
+     *
+     * Clearing before the loop, never after: constructing an Annotation
+     * self-wires it onto every Entity it targets, so the annotations this read
+     * returned re-attach themselves during the loop.  A multi-target annotation
+     * attached here by ANOTHER entity's read is dropped, which is correct — this
+     * entity's own query matches on every target key, so a live one comes back
+     * in `annotations` anyway.  The exception is a read truncated at the page
+     * limit, which expand.clientRead already warns about.
      * @param {Array<Object>} annotations annotation documents targeting this id.
      */
     #findAssertions = (annotations) => {
+        const previousCount = this.Annotations.size
+        this.Annotations = new Map()
         let attached = 0
         for (const anno of annotations) {
             if (this.attachAnnotation(new Annotation(anno))) { attached++ }
         }
-        if (attached) { this.#announce("update", this.assertions) }
+        // Announce on removal too: a view told nothing keeps rendering a value
+        // this read says is gone.  `attached` alone cannot see that case, since
+        // a read returning no annotations attaches none.
+        if (attached || previousCount !== this.Annotations.size) { this.#announce("update", this.assertions) }
         this.#settled = true
         this.#announce("complete")
     }

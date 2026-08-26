@@ -21,6 +21,13 @@ import config from './config.js'
  * @throws {Error} when the cast is not possible for this value.
  */
 function castValue(prop, asType) {
+    // Guarded above the try, not inside it: asType.toUpperCase() on a non-string
+    // throws, the catch rewrites it as "asType: '1' is not possible", and the
+    // real problem — the caller passed something that is not a cast name — ends
+    // up on a second line underneath a message that hides it.
+    if (typeof asType !== "string") {
+        throw new TypeError(`asType must be a string (STRING | NUMBER | INTEGER | BOOLEAN), got ${typeof asType}.`)
+    }
     let cast
     try {
         switch (asType.toUpperCase()) {

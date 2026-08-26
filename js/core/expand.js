@@ -57,6 +57,15 @@ import { applyAssertions, isAnnotationType, requireDocument, shapeValues } from 
  */
 const uncountedDeployments = new Set()
 
+/**
+ * Entities already reported as forcing the client fallback.  Deduplicated per
+ * ENTITY rather than per deployment (the way uncountedDeployments is): the
+ * divergence is a property of one entity's annotations, not of the server, so a
+ * list of 200 must not print 200 lines — but two different entities diverging
+ * are two different things to look at.
+ */
+const divergentEntities = new Set()
+
 /** Keep only the documents that are actually Annotations. */
 const onlyAnnotations = (finds) => (Array.isArray(finds) ? finds : [])
     .filter(doc => isAnnotationType(doc.type ?? doc["@type"]))
@@ -188,7 +197,15 @@ export async function forDisplay(id, { fresh = false } = {}) {
         // from this document and unrecoverable from it, so re-read the client
         // way and let the two paths agree.  DEER writes one key per annotation
         // and never asserts a protected key, so its own data never trips this.
-        if (config.DEBUG) { console.warn(`${uri}: server merged ${merged} of ${gathered} annotations. Falling back to the client read path so no asserted property is silently dropped.`) }
+        // Ungated, like the missing-headers branch above and for the same
+        // reason: the consequence is identical — two requests per display read
+        // and no cacheable path, which is the whole reason forDisplay exists.
+        // Gating it behind DEBUG let a deployment lose that path on a subset of
+        // its entities with nothing printed at all.
+        if (!divergentEntities.has(uri)) {
+            divergentEntities.add(uri)
+            console.warn(`${uri}: server merged ${merged} of ${gathered} annotations, so the cacheable read cannot be trusted for this entity and every display read of it now costs two requests. Falling back to the client read path so no asserted property is silently dropped.`)
+        }
         return clientMerge(uri, { fresh })
     }
     return shapeValues(requireDocument(document, `The expanded read of ${uri}`))

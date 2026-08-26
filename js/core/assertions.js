@@ -140,9 +140,18 @@ export function requireDocument(doc, context = "This read") {
  */
 export function buildValueObject(val, fromAnno = {}) {
     if (val !== null && typeof val === "object" && SHAPED.has(val)) { return val }
+    // An empty string is a value someone chose, not a missing one — a field a
+    // user deliberately cleared.  getValue reports a BARE "" as undefined (0.11
+    // treats it as "no value" and every other consumer of getValue still depends
+    // on that, so normalize is left alone) while reporting a WRAPPED one —
+    // {value: ""} — as "".  Restoring it here settles that disagreement and
+    // keeps the documented contract true: a non-identity value is always a
+    // value object, and a value object always has a `value` key.  Without it a
+    // cleared field shaped to {source, evidence} with no `value` at all.
+    const value = (val === "") ? "" : getValue(val)
     const valueObject = {
         source: { citationSource: fromAnno["@id"] ?? fromAnno.id },
-        value: getValue(val),
+        value,
         evidence: fromAnno.evidence ?? ""
     }
     SHAPED.add(valueObject)
@@ -261,10 +270,15 @@ export function applyAssertions(entity, annotations = []) {
  * that is already there the way the server merge does: an existing value
  * becomes the first element of an array the assertion is appended to.  Raw
  * values left here are shaped by the shapeValues pass that follows.
+ *
+ * Only undefined and null count as absent.  An existing "" is a value — the
+ * same rule buildValueObject follows — so an assertion arrives BESIDE it rather
+ * than overwriting it.  The two treating "" differently is how a cleared field
+ * silently lost the entity's own value on one path and kept it on the other.
  */
 function mergeAssertion(target, key, assertion) {
     const existing = target[key]
-    if (existing === undefined || existing === null || existing === "") {
+    if (existing === undefined || existing === null) {
         target[key] = assertion
         return
     }
