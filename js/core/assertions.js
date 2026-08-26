@@ -19,11 +19,30 @@ import config from './config.js'
 import { canonicalId } from './rerum.js'
 import { getValue } from './normalize.js'
 
-const DEFAULT_MATCH_ON = ["__rerum.generatedBy", "creator"]
+/**
+ * The client-path filter: an annotation augments an entity when its
+ * `__rerum.generatedBy` or `creator` matches the entity's own.  Exported so the
+ * read paths share one copy of the policy rather than drifting apart.
+ */
+export const DEFAULT_MATCH_ON = ["__rerum.generatedBy", "creator"]
 
 /**
- * Identity, not assertion — passed through shaping untouched.  checkMatch reads
- * `__rerum` off the document, so these must never be wrapped.
+ * First-class properties of the entity itself — passed through shaping
+ * untouched, and never merged into.  An annotation asserting one of these is
+ * ignored: a DEER app declares `type`, `@type`, and `@context` directly on the
+ * entity it creates and never relies on an Annotation to assert them, so an
+ * annotation that tries to is either a mistake or someone else redefining what
+ * your entity IS and what its properties MEAN.  RERUM is open, so that is not a
+ * hypothetical.  checkMatch reads `__rerum` off the document, and `@id`/`id`
+ * are the primary key, so those must never be wrapped either.
+ *
+ * Note the server does NOT protect `type`/`@type` — it merges an annotation
+ * that asserts them.  forDisplay in ./expand.js therefore reads the entity
+ * document alongside the merge and restores these keys from it, so the policy
+ * holds on both read paths rather than only on this one.
+ *
+ * isAnnotationType reads type off RAW fetched documents, never shaped ones, so
+ * it is unaffected by anything here.
  */
 export const IDENTITY_KEYS = ["@id", "id", "@type", "type", "@context", "__rerum"]
 
@@ -114,12 +133,7 @@ export function checkMatch(expanding, asserting, matchOn = DEFAULT_MATCH_ON) {
  */
 export function buildValueObject(val, fromAnno = {}) {
     const valueObject = {}
-    valueObject.source = val?.source ?? {
-        citationSource: fromAnno["@id"] ?? fromAnno.id,
-        // `||` here on purpose: an empty label should fall through to the default.
-        citationNote: fromAnno.label || fromAnno.name || "Composed object from DEER",
-        comment: "Learn about the assembler for this object at https://github.com/CenterForDigitalHumanities/deer"
-    }
+    valueObject.source = val?.source ?? { citationSource: fromAnno["@id"] ?? fromAnno.id }
     valueObject.value = val?.value ?? getValue(val)
     valueObject.evidence = val?.evidence ?? fromAnno.evidence ?? ""
     return valueObject
@@ -186,7 +200,22 @@ export function applyAssertions(entity, annotations = [], matchOn = DEFAULT_MATC
             for (const [key, val] of Object.entries(body)) {
                 if (key === "evidence") { continue }
                 if (val === undefined || val === null) { continue }
-                mergeAssertion(assertOn, key, buildValueObject(val, from))
+                if (IDENTITY_KEYS.includes(key)) {
+                    // Identity belongs to the entity, not to anything asserting
+                    // about it.  Merging here would leave a shaped value under a
+                    // key shapeValues passes through untouched, so the two read
+                    // paths would disagree on it.
+                    if (config.DEBUG) { console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts identity key '${key}'; ignoring.`) }
+                    continue
+                }
+                // An array body asserts N values, not one array-shaped value.
+                // The server merge flattens these onto the entity; matching that
+                // here is what keeps forDisplay and forEditing agreeing on shape
+                // for every multi-value property.
+                for (const one of (Array.isArray(val) ? val : [val])) {
+                    if (one === undefined || one === null) { continue }
+                    mergeAssertion(assertOn, key, buildValueObject(one, from))
+                }
             }
         }
     }

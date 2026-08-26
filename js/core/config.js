@@ -31,6 +31,13 @@ const config = {
     // it protocol-insensitively.  Default is the shared tinydev agent.
     GENERATOR: "https://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90",
 
+    // Base for resolving any relative value in URLS.  Prefer absolute URLS
+    // values; set this when a deployment must configure them relative (a
+    // same-origin proxy path, say) so resolution never depends on an ambient
+    // document.  Falls back to the document base in a browser, and is REQUIRED
+    // outside one -- there is no location to borrow.
+    BASE: undefined,
+
     // Query paging defaults, matching the 0.11 QUERY URL parameters.
     LIMIT: 50,
     SKIP: 0,

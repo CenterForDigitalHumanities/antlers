@@ -9,6 +9,12 @@
  * proxy (config.URLS).  HTTP contract, confirmed against the 0.11 runtime:
  * CREATE is POST, UPDATE/OVERWRITE are PUT, and tiny proxy responses wrap
  * the result in `new_obj_state`.
+ *
+ * This module also owns the cache-mode policy.  A write records every URI it
+ * invalidated -- the document itself, and for an Annotation every entity it
+ * targets, whose `/expanded` merge just changed.  The next read of each
+ * affected URL forces `{cache: 'reload'}` once, so read-after-write is correct
+ * without every call site having to remember to ask for it.
  */
 
 import config from './config.js'
@@ -16,6 +22,14 @@ import config from './config.js'
 const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8" }
 
 const fetcher = (...args) => (config.fetch ?? globalThis.fetch)(...args)
+
+/**
+ * URIs invalidated by a write, mapped to the request URLs already refreshed for
+ * them.  One id can be read through several URLs (the document itself and its
+ * `/expanded` merge are separate cache entries), so each gets its own forced
+ * reload rather than the first read consuming the invalidation for all of them.
+ */
+const staleIds = new Map()
 
 /**
  * Pull a usable URI out of a string or an object bearing `@id`/`id`.
@@ -65,26 +79,78 @@ export function isRerumId(id) {
     return config.ID_BASES.some(base => httpsId.startsWith(base))
 }
 
-function handleResponse(response) {
+/**
+ * Resolve a configured URL to an absolute one.  Every URL this module requests
+ * goes through here, so a deployment may configure URLS relative as long as it
+ * sets config.BASE.  Relying on an ambient document base is the fallback, not
+ * the contract — outside a browser there is none, and a relative value would
+ * otherwise fail deep inside fetch with an opaque message.
+ * @param {String} url the configured URL, absolute or relative.
+ * @returns {String} the absolute URL.
+ * @throws {TypeError} when a relative URL has no base to resolve against.
+ */
+function absoluteUrl(url) {
+    const base = config.BASE ?? globalThis.location?.href
+    try {
+        return new URL(url, base).toString()
+    } catch (err) {
+        throw new TypeError(`Cannot resolve '${url}' to an absolute URL${base ? ` against '${base}'` : " (no config.BASE and no document base)"}. Configure an absolute URL or set config.BASE.`)
+    }
+}
+
+/**
+ * Record that a write invalidated these URIs.  Existing refresh bookkeeping for
+ * a URI is discarded, so a second write re-invalidates every URL again.
+ */
+function markStale(...ids) {
+    for (const id of ids.flat(3)) {
+        const uri = (typeof id === "string") ? id : (id?.["@id"] ?? id?.id)
+        if (typeof uri === "string" && uri.length > 0) { staleIds.set(canonicalId(uri), new Set()) }
+    }
+}
+
+/**
+ * Does this read need to bust the HTTP cache?  True once per request URL per
+ * write, so the first read after a write revalidates and later reads are served
+ * from the refreshed cache entry.
+ */
+function needsReload(uri, url) {
+    const refreshed = staleIds.get(canonicalId(uri))
+    if (refreshed === undefined || refreshed.has(url)) { return false }
+    refreshed.add(url)
+    return true
+}
+
+async function handleResponse(response) {
     if (!response.ok) {
         throw Object.assign(
-            new Error(`HTTP ${response.status}${response.statusText ? `: ${response.statusText}` : ""}`),
-            { status: response.status }
+            new Error(`HTTP ${response.status}${response.statusText ? `: ${response.statusText}` : ""} — ${response.url}`),
+            { status: response.status, url: response.url }
         )
     }
-    return response.json()
+    try {
+        return await response.json()
+    } catch (err) {
+        // A foreign URI is not obliged to serve JSON.  Say which URI and what it
+        // sent instead of surfacing the parser's "Unexpected token '<'".
+        throw Object.assign(
+            new Error(`Expected JSON from ${response.url} but the body could not be parsed (content-type: ${response.headers.get("content-type") ?? "none"}).`),
+            { status: response.status, url: response.url, cause: err }
+        )
+    }
 }
 
 /**
  * GET a single document by URI.
  * @param {String|Object} id the document URI (or an object carrying one).
- * @param {Object} options `fresh: true` busts the HTTP cache — required for any
- * read that follows a write and for form prefill.
+ * @param {Object} options `fresh: true` busts the HTTP cache.  A read that
+ * follows a write of this URI busts it automatically.
  * @returns {Promise<Object>} the document.
  */
 export function resolve(id, { fresh = false } = {}) {
     const uri = canonicalId(idOf(id))
-    return fetcher(uri, fresh ? { cache: "reload" } : {}).then(handleResponse)
+    const reload = fresh || needsReload(uri, uri)
+    return fetcher(uri, reload ? { cache: "reload" } : {}).then(handleResponse)
 }
 
 /**
@@ -95,8 +161,12 @@ export function resolve(id, { fresh = false } = {}) {
  * config.GENERATOR.  Do not simplify this requirement away.
  * @param {String|Object} id the entity URI (or an object carrying one).
  * @param {Object} options `generator` (RERUM agent URI), `fresh` (bust HTTP cache).
- * @returns {Promise<Object>} the entity with annotations merged in.  The server
- * drops every annotation `@id`, so this response has no provenance.
+ * @returns {Promise<Object>} `{document, gathered, merged}`.  The counts come
+ * from the `Annotations-Gathered` / `Annotations-Merged` response headers and
+ * are NaN if a deployment does not send them.  They disagree when the server
+ * declined to merge something it found, which callers must handle — the server
+ * merges only single-key object bodies.  The document itself carries no
+ * annotation `@id`s, so this read has no provenance.
  */
 export async function expanded(id, { generator = config.GENERATOR, fresh = false } = {}) {
     if (!generator) {
@@ -104,29 +174,34 @@ export async function expanded(id, { generator = config.GENERATOR, fresh = false
     }
     const uri = canonicalId(idOf(id))
     const url = `${uri}/expanded?generator=${encodeURIComponent(generator)}`
-    return fetcher(url, fresh ? { cache: "reload" } : {}).then(handleResponse)
+    const reload = fresh || needsReload(uri, url)
+    const response = await fetcher(url, reload ? { cache: "reload" } : {})
+    const document = await handleResponse(response)
+    return {
+        document,
+        gathered: Number(response.headers.get("Annotations-Gathered")),
+        merged: Number(response.headers.get("Annotations-Merged"))
+    }
 }
 
 /**
  * POST a Mongo-style query to the deployment's TinyNode proxy.
+ * There is no `fresh` option: a POST response is never served from the HTTP
+ * cache, so every query is already a live read.
  * @param {Object} body the query document.
- * @param {Object} options `limit`/`skip` paging (config defaults), `fresh`.
+ * @param {Object} options `limit`/`skip` paging (config defaults).
  * @returns {Promise<Array<Object>>} matching documents.
  */
-export async function query(body, { limit = config.LIMIT, skip = config.SKIP, fresh = false } = {}) {
+export async function query(body, { limit = config.LIMIT, skip = config.SKIP } = {}) {
     // URL-object building replaces (not duplicates) any limit/skip already baked
-    // into an implementer's configured QUERY URL.  The document base matters:
-    // the 0.11 config shape is protocol-relative ("//tinydev.rerum.io/app/query",
-    // deer-config.js:31) and a same-origin proxy is configured as "/app/query" —
-    // fetch() accepts both, and new URL() without a base rejects both.
-    const url = new URL(config.URLS.QUERY, globalThis.location?.href)
+    // into an implementer's configured QUERY URL.
+    const url = new URL(absoluteUrl(config.URLS.QUERY))
     url.searchParams.set("limit", limit)
     url.searchParams.set("skip", skip)
     return fetcher(url.toString(), {
         method: "POST",
         headers: JSON_HEADERS,
-        body: JSON.stringify(body),
-        ...(fresh ? { cache: "reload" } : {})
+        body: JSON.stringify(body)
     }).then(handleResponse)
 }
 
@@ -138,23 +213,39 @@ export async function query(body, { limit = config.LIMIT, skip = config.SKIP, fr
  * @param {Object} options passed through to query().
  * @returns {Promise<Array<Object>>} targeting documents (callers filter to Annotation types).
  */
-export function findByTargetId(id, options = {}) {
-    const uris = httpsIdArray(idOf(id))
+export async function findByTargetId(id, options = {}) {
+    const uri = idOf(id)
+    const uris = httpsIdArray(uri)
     const body = {
         "$or": [{ "target": uris }, { "target.@id": uris }, { "target.id": uris }],
         "__rerum.history.next": { "$exists": true, "$size": 0 }
     }
-    return query(body, options)
+    const limit = options.limit ?? config.LIMIT
+    const finds = await query(body, { ...options, limit })
+    if (Array.isArray(finds) && finds.length >= limit) {
+        // Not gated behind DEBUG: a dropped annotation costs the editing path a
+        // citationSource, and a missing citationSource makes the next save POST
+        // a duplicate assertion instead of updating the existing one.
+        console.warn(`${uri}: annotation query returned a full page (limit ${limit}). Annotations beyond the limit are not merged and their provenance is lost — a form prefilled from this read may create duplicate assertions.`)
+    }
+    return finds
 }
 
 function write(url, method, obj) {
-    return fetcher(url, {
+    return fetcher(absoluteUrl(url), {
         method,
         headers: JSON_HEADERS,
         body: JSON.stringify(obj)
     })
         .then(handleResponse)
         .then(data => data.new_obj_state ?? data)
+        .then(saved => {
+            // The written document's own cached read is stale, and so is every
+            // entity it targets — writing an Annotation changes the `/expanded`
+            // merge of its target.
+            markStale(saved, obj, saved?.target, obj?.target)
+            return saved
+        })
 }
 
 /**
