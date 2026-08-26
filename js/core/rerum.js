@@ -39,9 +39,11 @@ const staleIds = new Map()
 const STALE_URL_FORMS = 2
 
 /**
- * Backstop for a session that only ever reads one URL form per id (a
- * forms-only app never issues the `/expanded` read), so its invalidations are
- * never fully spent.  Oldest entries are evicted past this many.
+ * Backstop for a session that only ever reads one URL form per id, so its
+ * invalidations are never fully spent.  Most sessions are that session: a
+ * forms-only app never issues the `/expanded` read, and since forDisplay
+ * stopped fetching the entity document alongside the merge, a display-only app
+ * never issues the plain GET.  Oldest entries are evicted past this many.
  */
 const STALE_LIMIT = 500
 

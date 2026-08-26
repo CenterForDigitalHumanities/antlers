@@ -48,22 +48,27 @@ export function activeMatchOn() {
  * annotation that tries to is either a mistake or someone else redefining what
  * your entity IS and what its properties MEAN.  RERUM is open, so that is not a
  * hypothetical.  checkMatch reads `__rerum` off the document, and `@id`/`id`
- * are the primary key, so those must never be wrapped either.
+ * are the primary key, so those must never be wrapped either.  `_id` and
+ * `__deleted` are here for the same reason: an Annotation asserting either is
+ * claiming to rewrite the record's primary key or to bury it.
  *
- * Note the server does NOT protect `type`/`@type` — it merges an annotation
- * that asserts them.  forDisplay in ./expand.js therefore reads the entity
- * document alongside the merge and restores these keys from it, so the policy
- * holds on both read paths rather than only on this one.
+ * This list is the client half of the server's PROTECTED_EXPANSION_KEYS
+ * (rerum_server_nodejs/controllers/utils.js) — same membership, minus
+ * `__proto__`, which FORBIDDEN_KEYS below handles more strictly.  Because the
+ * server refuses these too, forDisplay can trust its merge for identity and
+ * read it with a single request; keep the two lists in step or the read paths
+ * will disagree about what an Annotation is allowed to say.
  *
  * isAnnotationType reads type off RAW fetched documents, never shaped ones, so
  * it is unaffected by anything here.
  */
-export const IDENTITY_KEYS = ["@id", "id", "@type", "type", "@context", "__rerum"]
+export const IDENTITY_KEYS = ["@id", "id", "_id", "@type", "type", "@context", "__rerum", "__deleted"]
 
 /**
  * Keys an Annotation may never assert onto an entity and that never survive
- * shaping, mirroring the server's PROTECTED_EXPANSION_KEYS
- * (rerum_server_nodejs/controllers/crud.js).  structuredClone plus
+ * shaping.  The prototype-pollution corner of the server's
+ * PROTECTED_EXPANSION_KEYS (rerum_server_nodejs/controllers/utils.js);
+ * IDENTITY_KEYS above covers the rest of that list.  structuredClone plus
  * Object.entries already absorb a `__proto__` body in practice, but that safety
  * is incidental — a document parsed straight from JSON carries `__proto__` as
  * an OWN property, which Object.entries does yield.  One Set membership test
