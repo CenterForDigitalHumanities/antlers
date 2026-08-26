@@ -32,6 +32,20 @@ const fetcher = (...args) => (config.fetch ?? globalThis.fetch)(...args)
 const staleIds = new Map()
 
 /**
+ * How many distinct request URLs one invalidated URI is read through: the
+ * document itself, and its `/expanded` merge.  Once both have been refreshed
+ * the invalidation is spent and the entry is dropped.
+ */
+const STALE_URL_FORMS = 2
+
+/**
+ * Backstop for a session that only ever reads one URL form per id (a
+ * forms-only app never issues the `/expanded` read), so its invalidations are
+ * never fully spent.  Oldest entries are evicted past this many.
+ */
+const STALE_LIMIT = 500
+
+/**
  * Pull a usable URI out of a string or an object bearing `@id`/`id`.
  * @param {String|Object} entity the id string or an object carrying one.
  * @returns {String} the URI.
@@ -94,7 +108,7 @@ function absoluteUrl(url) {
     try {
         return new URL(url, base).toString()
     } catch (err) {
-        throw new TypeError(`Cannot resolve '${url}' to an absolute URL${base ? ` against '${base}'` : " (no config.BASE and no document base)"}. Configure an absolute URL or set config.BASE.`)
+        throw new TypeError(`Cannot resolve '${url}' to an absolute URL${base ? ` against '${base}'` : " (no config.BASE and no document base)"}. Configure an absolute URL or set config.BASE.`, { cause: err })
     }
 }
 
@@ -105,7 +119,10 @@ function absoluteUrl(url) {
 function markStale(...ids) {
     for (const id of ids.flat(3)) {
         const uri = (typeof id === "string") ? id : (id?.["@id"] ?? id?.id)
-        if (typeof uri === "string" && uri.length > 0) { staleIds.set(canonicalId(uri), new Set()) }
+        if (typeof uri !== "string" || uri.length === 0) { continue }
+        staleIds.set(canonicalId(uri), new Set())
+        // Map preserves insertion order, so the first key is the oldest.
+        if (staleIds.size > STALE_LIMIT) { staleIds.delete(staleIds.keys().next().value) }
     }
 }
 
@@ -115,9 +132,14 @@ function markStale(...ids) {
  * from the refreshed cache entry.
  */
 function needsReload(uri, url) {
-    const refreshed = staleIds.get(canonicalId(uri))
+    const key = canonicalId(uri)
+    const refreshed = staleIds.get(key)
     if (refreshed === undefined || refreshed.has(url)) { return false }
     refreshed.add(url)
+    // Every read shape for this URI has now revalidated, so the invalidation is
+    // spent.  Holding the entry any longer only grows the Map for the life of
+    // the session.
+    if (refreshed.size >= STALE_URL_FORMS) { staleIds.delete(key) }
     return true
 }
 
@@ -149,7 +171,10 @@ async function handleResponse(response) {
  */
 export function resolve(id, { fresh = false } = {}) {
     const uri = canonicalId(idOf(id))
-    const reload = fresh || needsReload(uri, uri)
+    // needsReload first: short-circuiting past it on an explicit fresh read
+    // leaves the invalidation unspent, so the NEXT ordinary read of this URL
+    // revalidates again for no reason.
+    const reload = needsReload(uri, uri) || fresh
     return fetcher(uri, reload ? { cache: "reload" } : {}).then(handleResponse)
 }
 
@@ -174,7 +199,7 @@ export async function expanded(id, { generator = config.GENERATOR, fresh = false
     }
     const uri = canonicalId(idOf(id))
     const url = `${uri}/expanded?generator=${encodeURIComponent(generator)}`
-    const reload = fresh || needsReload(uri, url)
+    const reload = needsReload(uri, url) || fresh
     const response = await fetcher(url, reload ? { cache: "reload" } : {})
     const document = await handleResponse(response)
     return {

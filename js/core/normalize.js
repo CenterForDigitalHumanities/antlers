@@ -3,13 +3,40 @@
  * @author Patrick Cuba <cubap@slu.edu>
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
- * Ported from the 0.11 UTILS.getValue / UTILS.getLabel with three behavioral
+ * Ported from the 0.11 UTILS.getValue / UTILS.getLabel with four behavioral
  * fixes: a failed type cast now throws to the caller instead of being swallowed
  * by a `finally { return … }`, null input is treated as missing instead of
- * crashing the peek loop, and the BOOLEAN cast is no longer inverted.
+ * crashing the peek loop, the BOOLEAN cast is no longer inverted, and `asType`
+ * is applied to every member of an array instead of being skipped entirely.
  */
 
 import config from './config.js'
+
+/**
+ * Apply a requested cast to a single value.
+ * @param {any} prop the value to cast.
+ * @param {String} asType STRING | NUMBER | INTEGER | BOOLEAN.  Anything else is a no-op.
+ * @returns {any} the cast value.
+ * @throws {Error} when the cast is not possible for this value.
+ */
+function castValue(prop, asType) {
+    try {
+        switch (asType.toUpperCase()) {
+            case "STRING":
+                return prop.toString()
+            case "NUMBER":
+                return parseFloat(prop)
+            case "INTEGER":
+                return parseInt(prop)
+            case "BOOLEAN":
+                return !["false", "no", "0", "", "undefined", "null"].includes(String(prop).toLowerCase().trim())
+            default:
+                return prop
+        }
+    } catch (err) {
+        throw new Error(`asType: '${asType}' is not possible.\n${err.message}`)
+    }
+}
 
 /**
  * Dig the usable value out of a property that may be a primitive, an object
@@ -17,7 +44,8 @@ import config from './config.js'
  * @param {any} property the property value to normalize.
  * @param {Array<String>|String} alsoPeek additional keys to check for a nested value.
  * @param {String} [asType] optional cast: STRING | NUMBER | INTEGER | BOOLEAN.
- * @returns {any} the normalized value.
+ * @returns {any} the normalized value.  An array in yields an array out, with
+ * the cast applied member by member.
  */
 export function getValue(property, alsoPeek = [], asType) {
     let prop
@@ -27,7 +55,10 @@ export function getValue(property, alsoPeek = [], asType) {
     }
     if (Array.isArray(property)) {
         // It is an array of things; the caller decides how to join or map them.
-        return property
+        // A requested cast applies to each member — 0.11 returned here before
+        // reaching the cast at all, so getValue(["3","4"], [], "NUMBER") came
+        // back as strings and silently defeated the caller's request.
+        return asType ? property.map(p => castValue(p, asType)) : property
     }
     if (typeof property === "object") {
         // JSON-LD insists on "@value", but the wild data this consumes
@@ -44,27 +75,7 @@ export function getValue(property, alsoPeek = [], asType) {
     } else {
         prop = property
     }
-    if (asType) {
-        try {
-            switch (asType.toUpperCase()) {
-                case "STRING":
-                    prop = prop.toString()
-                    break
-                case "NUMBER":
-                    prop = parseFloat(prop)
-                    break
-                case "INTEGER":
-                    prop = parseInt(prop)
-                    break
-                case "BOOLEAN":
-                    prop = !["false", "no", "0", "", "undefined", "null"].includes(String(prop).toLowerCase().trim())
-                    break
-                default:
-            }
-        } catch (err) {
-            throw new Error(`asType: '${asType}' is not possible.\n${err.message}`)
-        }
-    }
+    if (asType) { prop = castValue(prop, asType) }
     return (prop?.length === 1) ? prop[0] : prop
 }
 

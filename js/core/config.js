@@ -38,6 +38,18 @@ const config = {
     // outside one -- there is no location to borrow.
     BASE: undefined,
 
+    // Client-side annotation filter for the editing read path and the display
+    // path's client fallback.  checkMatch short-circuits: the FIRST listed
+    // property that both the entity and the annotation carry decides the match,
+    // so order matters.  The shipped default is `__rerum.generatedBy` alone,
+    // which is the exact client-side equivalent of the server's `?generator=`
+    // filter -- every RERUM document carries it, so anything listed after it is
+    // unreachable for RERUM-hosted annotations.  A deployment whose annotations
+    // record a meaningful `creator` and whose entities agree may opt in:
+    //   configure({ MATCH_ON: ["creator", "__rerum.generatedBy"] })
+    // Undefined falls back to assertions.DEFAULT_MATCH_ON.
+    MATCH_ON: undefined,
+
     // Query paging defaults, matching the 0.11 QUERY URL parameters.
     LIMIT: 50,
     SKIP: 0,

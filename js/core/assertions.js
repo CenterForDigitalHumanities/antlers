@@ -12,7 +12,9 @@
  * shapeValues lives here because both read paths finish with it: the client
  * merge below and the server `/expanded` response in ./expand.js come out
  * identically shaped, so `source.citationSource` is the only thing that differs
- * between them.
+ * between them.  Keeping that true means matching the server's body-reading
+ * rules, not just its output shape — see TEXTUAL_BODY_TYPES and the bodyValue
+ * handling in applyAssertions.
  */
 
 import config from './config.js'
@@ -20,11 +22,23 @@ import { canonicalId } from './rerum.js'
 import { getValue } from './normalize.js'
 
 /**
- * The client-path filter: an annotation augments an entity when its
- * `__rerum.generatedBy` or `creator` matches the entity's own.  Exported so the
- * read paths share one copy of the policy rather than drifting apart.
+ * The client-path filter, and the exact client-side equivalent of the server's
+ * `?generator=`.  checkMatch short-circuits on the first property both
+ * documents carry, and every RERUM document carries `__rerum.generatedBy`, so
+ * anything listed after it is unreachable for RERUM-hosted annotations — which
+ * is why this is a single entry rather than the 0.11 pair.  A deployment that
+ * genuinely wants to match on `creator` sets config.MATCH_ON; see config.js.
  */
-export const DEFAULT_MATCH_ON = ["__rerum.generatedBy", "creator"]
+export const DEFAULT_MATCH_ON = ["__rerum.generatedBy"]
+
+/**
+ * The filter actually in force: the deployment's override, else the default.
+ * Read per call so configure() takes effect without re-importing anything.
+ * @returns {Array<String>} dot-separated property paths for checkMatch.
+ */
+export function activeMatchOn() {
+    return config.MATCH_ON ?? DEFAULT_MATCH_ON
+}
 
 /**
  * First-class properties of the entity itself — passed through shaping
@@ -47,6 +61,38 @@ export const DEFAULT_MATCH_ON = ["__rerum.generatedBy", "creator"]
 export const IDENTITY_KEYS = ["@id", "id", "@type", "type", "@context", "__rerum"]
 
 /**
+ * Keys an Annotation may never assert onto an entity and that never survive
+ * shaping, mirroring the server's PROTECTED_EXPANSION_KEYS
+ * (rerum_server_nodejs/controllers/crud.js).  structuredClone plus
+ * Object.entries already absorb a `__proto__` body in practice, but that safety
+ * is incidental — a document parsed straight from JSON carries `__proto__` as
+ * an OWN property, which Object.entries does yield.  One Set membership test
+ * makes the guard deliberate instead of lucky.
+ */
+export const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"])
+
+/**
+ * Body types the server folds whole into a single `bodyValue` assertion rather
+ * than reading key by key (rerum_server_nodejs/controllers/crud.js
+ * TEXTUAL_BODY_TYPES).  Mirrored here so the two read paths agree on the KEY a
+ * TextualBody lands under, not merely on the shape of the value.
+ */
+export const TEXTUAL_BODY_TYPES = new Set([
+    "TextualBody", "oa:TextualBody",
+    "http://www.w3.org/ns/oa#TextualBody", "https://www.w3.org/ns/oa#TextualBody"
+])
+
+/**
+ * Objects this module has already shaped.  Identity-based, so a value object is
+ * recognized because THIS module made it — never because it happens to carry a
+ * `source` or `value` key.  Sniffing for those keys silently mistook ordinary
+ * vocabulary (`{source: "Book A", value: "p. 12"}`) for an already-shaped value
+ * and dropped its citationSource, which makes the next form save POST a
+ * duplicate assertion instead of updating the existing one.
+ */
+const SHAPED = new WeakSet()
+
+/**
  * Is this `type`/`@type` value an Annotation?  Accepts a string or an array of
  * strings; matches the bare and namespace-prefixed forms exactly ("Annotation",
  * "oa:Annotation") — deliberately NOT a substring match, so "AnnotationPage"
@@ -57,6 +103,15 @@ export const IDENTITY_KEYS = ["@id", "id", "@type", "type", "@context", "__rerum
 export function isAnnotationType(typeValue) {
     return [typeValue].flat().some(t =>
         typeof t === "string" && (t === "Annotation" || t.endsWith(":Annotation")))
+}
+
+/**
+ * Does this annotation body assert itself whole, as the server's `bodyValue`?
+ * @param {Object} body one body of an annotation.
+ * @returns {Boolean}
+ */
+function isTextualBody(body) {
+    return [body.type ?? body["@type"]].flat().some(t => TEXTUAL_BODY_TYPES.has(t))
 }
 
 /**
@@ -82,12 +137,16 @@ export function requireDocument(doc, context = "This read") {
  * relevant and authorized to augment the original object.  This is the client
  * fallback for the filtering the server performs with `?generator=` on the
  * display path.
+ *
+ * Note the short-circuit: the FIRST listed property that both documents carry
+ * decides the outcome, and a mismatch there ends the comparison.  Order in
+ * matchOn is therefore significant.
  * @param {Object} expanding existing object with values to check.
  * @param {Object} asserting annotation document to compare.
  * @param {Array<String>} matchOn dot-separated property paths to compare.
  * @returns {Boolean} whether the annotation should augment the object.
  */
-export function checkMatch(expanding, asserting, matchOn = DEFAULT_MATCH_ON) {
+export function checkMatch(expanding, asserting, matchOn = activeMatchOn()) {
     for (const m of matchOn) {
         let obj_match = m.split('.').reduce((o, i) => o?.[i], expanding)
         let anno_match = m.split('.').reduce((o, i) => o?.[i], asserting)
@@ -125,17 +184,25 @@ export function checkMatch(expanding, asserting, matchOn = DEFAULT_MATCH_ON) {
  * The return is only the value of the assertion, so the desired key must be
  * applied upstream from the scope of this function.  Survives the heterogeneous
  * arrays `/expanded` produces (raw strings and `{value}` objects mixed), and is
- * idempotent — shaping an already-shaped value returns it unchanged, which is
- * what lets shapeValues run over a partly merged document.
+ * idempotent — a value object this module already built is returned unchanged,
+ * which is what lets shapeValues run over a partly merged document.
+ *
+ * Idempotency is by object identity (the SHAPED WeakSet), never by inspecting
+ * the value's keys.  `source` and `value` are ordinary vocabulary terms; a body
+ * asserting `{citation: {source: "Book A", value: "p. 12"}}` is real data, not a
+ * value object, and must keep its citationSource.
  * @param {any} val asserted value of the incoming annotation.
  * @param {Object} fromAnno parent annotation of the asserted value, as a handy metadata container.
  * @returns {Object} with `value`, `source`, and `evidence` keys.
  */
 export function buildValueObject(val, fromAnno = {}) {
-    const valueObject = {}
-    valueObject.source = val?.source ?? { citationSource: fromAnno["@id"] ?? fromAnno.id }
-    valueObject.value = val?.value ?? getValue(val)
-    valueObject.evidence = val?.evidence ?? fromAnno.evidence ?? ""
+    if (val !== null && typeof val === "object" && SHAPED.has(val)) { return val }
+    const valueObject = {
+        source: { citationSource: fromAnno["@id"] ?? fromAnno.id },
+        value: getValue(val),
+        evidence: fromAnno.evidence ?? ""
+    }
+    SHAPED.add(valueObject)
     return valueObject
 }
 
@@ -150,6 +217,9 @@ export function buildValueObject(val, fromAnno = {}) {
 export function shapeValues(obj) {
     const shaped = {}
     for (const [key, val] of Object.entries(requireDocument(obj, "Shaping"))) {
+        // Never let a reserved key reach an assignment — `shaped["__proto__"] = …`
+        // rewrites the prototype instead of setting a property.
+        if (FORBIDDEN_KEYS.has(key)) { continue }
         if (IDENTITY_KEYS.includes(key)) {
             shaped[key] = val
             continue
@@ -177,7 +247,7 @@ export function shapeValues(obj) {
  * @param {Array<String>} matchOn dot-separated property paths for checkMatch.
  * @returns {Object} a new, DEER-shaped object with the assertions applied.
  */
-export function applyAssertions(entity, annotations = [], matchOn = DEFAULT_MATCH_ON) {
+export function applyAssertions(entity, annotations = [], matchOn = activeMatchOn()) {
     const assertOn = structuredClone(requireDocument(entity, "applyAssertions"))
     for (const anno of annotations) {
         // A superseded annotation asserts nothing.  RERUM mints a new @id on
@@ -187,6 +257,14 @@ export function applyAssertions(entity, annotations = [], matchOn = DEFAULT_MATC
         // this the same way (deer-utils.js:150).
         if (anno?.__rerum?.history?.next?.length) { continue }
         if (!checkMatch(entity, anno, matchOn)) { continue }
+        // The server emits an assertion for a bare `bodyValue` string, which
+        // this path read nothing from at all.  Nothing reported the gap either:
+        // the server counts such an annotation as merged, so gathered === merged
+        // and forDisplay's divergence guard never fired.  A view showed the
+        // value and a form editing the same entity was blind to it.
+        if (typeof anno.bodyValue === "string") {
+            mergeAssertion(assertOn, "bodyValue", buildValueObject(anno.bodyValue, anno))
+        }
         let bodies = anno.body ?? []
         if (!Array.isArray(bodies)) { bodies = [bodies] }
         for (const body of bodies.flat(2)) {
@@ -197,9 +275,21 @@ export function applyAssertions(entity, annotations = [], matchOn = DEFAULT_MATC
             // instead — that is what buildValueObject's evidence slot is for.
             const evidence = body.evidence?.["@id"] ?? body.evidence
             const from = (evidence === undefined) ? anno : { ...anno, evidence }
+            // A TextualBody asserts itself whole under `bodyValue`, the way the
+            // server does.  Reading its keys instead would land the text under
+            // `value`, so the two paths would disagree on the KEY — and again
+            // with no signal, since the server merges it and the counts match.
+            if (isTextualBody(body)) {
+                mergeAssertion(assertOn, "bodyValue", buildValueObject(body, from))
+                continue
+            }
             for (const [key, val] of Object.entries(body)) {
                 if (key === "evidence") { continue }
                 if (val === undefined || val === null) { continue }
+                if (FORBIDDEN_KEYS.has(key)) {
+                    console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts the reserved key '${key}'; ignoring.`)
+                    continue
+                }
                 if (IDENTITY_KEYS.includes(key)) {
                     // Identity belongs to the entity, not to anything asserting
                     // about it.  Merging here would leave a shaped value under a

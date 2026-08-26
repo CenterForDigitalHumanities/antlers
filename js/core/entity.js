@@ -7,8 +7,10 @@
  * objectMatch is defined here (rc-1.0 exported an undefined binding), the
  * worker branches are gone (server-side expansion removed the worker's reason
  * to exist), and Entity extends EventTarget so announcements dispatch on the
- * instance instead of a document shim.  All network traffic delegates to
- * ./rerum.js, and both read strategies come from ./expand.js.
+ * instance instead of a document shim.  Both read strategies come from
+ * ./expand.js — the display merge from forDisplay, the editing parts from
+ * clientRead — so this module never issues a request of its own and touches
+ * ./rerum.js only for id normalization.
  *
  * EntityMap is render coordination, not a data cache: an identity map keyed by
  * the canonical (https) id form plus one in-flight resolution promise per id,
@@ -17,10 +19,9 @@
  * browser HTTP cache is the only data cache.
  */
 
-import config from './config.js'
 import * as rerum from './rerum.js'
 import * as expand from './expand.js'
-import { applyAssertions, isAnnotationType } from './assertions.js'
+import { applyAssertions } from './assertions.js'
 
 const EntityMap = new Map()
 const inFlight = new Map()
@@ -135,6 +136,9 @@ class Entity extends EventTarget {
     #assertions
     #settled = false
     #error
+    // Bumped whenever the strategy changes under an in-flight resolution, so
+    // that resolution can tell its result is no longer wanted.
+    #generation = 0
 
     /**
      * @param {Object|String} entity object to be described (usually from a JSON-LD
@@ -194,8 +198,12 @@ class Entity extends EventTarget {
         if (this.#assertions === undefined) {
             // The display read comes back already shaped by expand.forDisplay
             // and has no annotations to merge; only the editing read does.
+            // Cloned, not aliased: the display read is already shaped, so
+            // returning _data itself would let any subscriber mutating
+            // detail.payload corrupt the Entity for every other subscriber.
+            // The editing branch already returns a fresh object.
             this.#assertions = (this.#strategy === "display")
-                ? this._data
+                ? structuredClone(this._data)
                 : applyAssertions(this._data, [...this.Annotations.values()].map(a => a.data))
         }
         return this.#assertions
@@ -244,6 +252,13 @@ class Entity extends EventTarget {
         this.#strategy = "editing"
         this.#assertions = undefined
         this.#settled = false
+        // A display resolution may already be in flight.  Nothing cancels a
+        // fetch, so mark its result unwanted: without this it lands last often
+        // enough to matter, writes its SHAPED document into _data, and the
+        // editing merge then runs on top of the server's merge — every value
+        // duplicated, half of them with no citationSource, which makes the next
+        // form save POST a new annotation instead of updating.
+        this.#generation++
         // Nothing from the display read is reusable — it has no provenance at
         // all — so this is a full re-read, not a top-up.
         return this.resolve({ fresh: true })
@@ -261,9 +276,15 @@ class Entity extends EventTarget {
     subscribe(handler) {
         for (const action of LIFECYCLE) { this.addEventListener(action, handler) }
         if (this.#settled) {
-            handler((this.#error === undefined)
-                ? this.#event("update", this.assertions)
-                : this.#event("error", this.#error))
+            if (this.#error === undefined) {
+                handler(this.#event("update", this.assertions))
+                // Replay `complete` too.  An element that renders on it would
+                // otherwise render only for the first subscriber — which is the
+                // several-elements-on-one-deer-id case this Map exists for.
+                handler(this.#event("complete"))
+            } else {
+                handler(this.#event("error", this.#error))
+            }
         }
         return () => { for (const action of LIFECYCLE) { this.removeEventListener(action, handler) } }
     }
@@ -293,7 +314,10 @@ class Entity extends EventTarget {
      * the Entity, so subscribers see it whenever they arrive.
      */
     resolve({ fresh = false } = {}) {
-        const key = rerum.canonicalId(this.#id)
+        // Keyed by strategy as well as id: an editing caller must never be
+        // handed a display resolution's promise, which resolves to a document
+        // carrying no provenance at all.
+        const key = `${this.#strategy}:${rerum.canonicalId(this.#id)}`
         const pending = inFlight.get(key)
         // A pending non-fresh resolution cannot satisfy a fresh request —
         // read-after-write must never be served a stale in-flight promise.
@@ -304,61 +328,55 @@ class Entity extends EventTarget {
         return promise
     }
 
-    #findAssertions = async (assertions) => {
-        try {
-            const finds = Array.isArray(assertions) ? assertions : await rerum.findByTargetId(this.#id)
-            // Constructing an Annotation self-wires it onto every Entity it
-            // targets, so attachment is a side effect.  Attaching explicitly as
-            // well is what makes the count honest: attachAnnotation reports
-            // whether THIS Entity could key on it.
-            let attached = 0
-            for (const anno of finds) {
-                if (!isAnnotationType(anno.type ?? anno['@type'])) { continue }
-                if (this.attachAnnotation(new Annotation(anno))) { attached++ }
-            }
-            if (attached) { this.#announce("update", this.assertions) }
-            this.#settled = true
-            this.#announce("complete")
-        } catch (err) {
-            this.#fail(err)
+    /**
+     * Take the annotation documents this Entity's read returned.  Constructing
+     * an Annotation self-wires it onto every Entity it targets, so attachment
+     * is a side effect; attaching explicitly as well is what makes the count
+     * honest, because attachAnnotation reports whether THIS Entity could key
+     * on it.  Documents are already filtered to Annotation types by
+     * expand.clientRead.
+     * @param {Array<Object>} annotations annotation documents targeting this id.
+     */
+    #findAssertions = (annotations) => {
+        let attached = 0
+        for (const anno of annotations) {
+            if (this.attachAnnotation(new Annotation(anno))) { attached++ }
         }
+        if (attached) { this.#announce("update", this.assertions) }
+        this.#settled = true
+        this.#announce("complete")
     }
 
     #resolveURI = async (fresh) => {
+        // Captured before the first await.  A strategy change while this is in
+        // flight bumps #generation, and everything below then belongs to a
+        // resolution nobody wants — writing its result would clobber the newer
+        // one.  Reading #strategy once also keeps the branch and its result in
+        // agreement, which matters because the two produce different documents:
+        // display is already shaped, editing is raw.
+        const generation = this.#generation
+        const strategy = this.#strategy
         this.#error = undefined
         try {
-            if (this.#strategy === "display") {
-                // One cacheable request, no provenance.  forDisplay shapes the
+            if (strategy === "display") {
+                // One cacheable read, no provenance.  forDisplay shapes the
                 // result itself, so there are no Annotations to attach.
-                this.data = await expand.forDisplay(this.#id, { fresh })
+                const resolved = await expand.forDisplay(this.#id, { fresh })
+                if (generation !== this.#generation) { return }
+                this.data = resolved
                 this.#settled = true
                 this.#announce("complete")
                 return
             }
-            if (!this.#isLazy) {
-                // One round trip: the entity document and its targeting annotations
-                // come back together from a single $or query.
-                const uris = rerum.httpsIdArray(this.#id)
-                const obj = {
-                    "$or": [{ "@id": uris }, { "target": uris }, { "target.@id": uris }, { "target.id": uris }],
-                    "__rerum.history.next": { "$exists": true, "$size": 0 }
-                }
-                const finds = await rerum.query(obj)
-                const list = Array.isArray(finds) ? finds : []
-                if (list.length >= config.LIMIT) {
-                    console.warn(`Compound query for ${this.#id} returned ${list.length} documents (limit ${config.LIMIT}) — annotations beyond the limit are not merged.`)
-                }
-                // The leaf filter excludes an entity that has since been updated,
-                // and a full page can crowd the entity document out entirely —
-                // recover it with a direct GET (which 404s if it truly is absent).
-                this.data = list.find(e => sameId(e["@id"], this.#id))
-                    ?? await rerum.resolve(this.#id, { fresh })
-                await this.#findAssertions(list.filter(e => !sameId(e["@id"], this.#id)))
-            } else {
-                this.data = await rerum.resolve(this.#id, { fresh })
-                await this.#findAssertions()
-            }
+            // The editing read belongs to expand.clientRead; Entity holds the
+            // parts it returns rather than re-deriving them, so there is one
+            // implementation of the provenance-critical path, not two.
+            const { entity, annotations } = await expand.clientRead(this.#id, { fresh, lazy: this.#isLazy })
+            if (generation !== this.#generation) { return }
+            this.data = entity
+            this.#findAssertions(annotations)
         } catch (err) {
+            if (generation !== this.#generation) { return }
             this.#fail(err)
         }
     }
