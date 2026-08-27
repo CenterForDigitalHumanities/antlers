@@ -136,6 +136,7 @@ export function isRerumId(id) {
         return false
     }
     if (url.search || url.hash) { return false }
+    if (url.pathname.endsWith("/")) { return false }
     return config.ID_BASES.some(base => url.href.startsWith(base) && url.href.length > base.length)
 }
 
@@ -288,7 +289,7 @@ export async function resolve(id, { fresh = false } = {}) {
 export async function expanded(id, { fresh = false } = {}) {
     const uri = canonicalId(idOf(id))
     if (!isRerumId(uri)) {
-        throw new TypeError(`${uri} is not a RERUM document id, so it has no /expanded merge. Ids must be bare URIs on config.ID_BASES (currently ${JSON.stringify(config.ID_BASES)}) — no query string, no fragment.`)
+        throw new TypeError(`${uri} is not a RERUM document id, so it has no /expanded merge. Ids must be bare URIs on config.ID_BASES (currently ${JSON.stringify(config.ID_BASES)}) — no query string, no fragment, no trailing slash.`)
     }
     const url = `${uri}/expanded?generator=${encodeURIComponent(requireGenerator())}`
     const reload = needsReload(uri, url) || fresh

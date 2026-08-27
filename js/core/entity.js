@@ -351,6 +351,7 @@ class Entity extends EventTarget {
             console.warn(`${this.#id}: upgraded to the editing read on demand, discarding a display read already paid for. Reserve the ids your forms carry with reserveEditing() at scan time so the first read is the right one.`)
         }
         await this.upgradeToEditing()
+        if (this.#adopted !== undefined) { return this.#adopted.assertionsForEditing() }
         if (this.#error !== undefined) { throw this.#error }
         return this.assertions
     }
@@ -428,6 +429,9 @@ class Entity extends EventTarget {
      */
     #adopt = (incumbent) => {
         this.#adopted = incumbent
+        if (this.#strategy === "editing" && incumbent.strategy !== "editing") {
+            incumbent.upgradeToEditing()
+        }
         // Re-point, not delete: a consumer that arrived by the URI this Entity
         // was constructed with (the Slug, typically) must reach the survivor.
         // The incumbent takes ownership so its own #release gives them back.
@@ -439,7 +443,8 @@ class Entity extends EventTarget {
         // This Entity's live subscribers are consumers of the RECORD, and the
         // record is the incumbent's to coordinate now, so their count moves
         // with them.
-        if (this.#subscribers > 0) {
+        const hadSubscribers = this.#subscribers > 0
+        if (hadSubscribers) {
             incumbent.#subscribers += this.#subscribers
             incumbent.#everSubscribed = true
             this.#subscribers = 0
@@ -451,7 +456,7 @@ class Entity extends EventTarget {
         this._data = undefined
         this.#assertions = undefined
         this.#annotations = new Map()
-        this.#forwardFrom(incumbent)
+        if (hadSubscribers) { this.#forwardFrom(incumbent) }
     }
 
     /**

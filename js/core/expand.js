@@ -45,7 +45,7 @@ const onlyAnnotations = (finds) => (Array.isArray(finds) ? finds : [])
  */
 function requireRerumId(uri) {
     if (rerum.isRerumId(uri)) { return }
-    throw new TypeError(`${uri} is not hosted by RERUM, and DEER reads and writes RERUM entities only. If this IS your RERUM deployment, add its id base to config.ID_BASES (currently ${JSON.stringify(config.ID_BASES)}).`)
+    throw new TypeError(`${uri} is not hosted by RERUM, and DEER reads and writes RERUM entities only. Ids must be bare URIs — no query string, no fragment, no trailing slash. If this IS your RERUM deployment, add its id base to config.ID_BASES (currently ${JSON.stringify(config.ID_BASES)}).`)
 }
 
 /**
