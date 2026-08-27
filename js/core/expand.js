@@ -121,10 +121,10 @@ const escapeRegex = (literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
  * resource and which an exact match does not catch.  `target.source` is the
  * W3C SpecificResource.
  *
- * KNOWN DIVERGENCE: the server also gathers annotations targeting the entity's
- * Slug URI, which the client cannot build until it already holds the document.
- * An entity annotated by slug therefore reads complete on the display path and
- * short on the editing path.
+ * Covers ONE URI.  A record answering to a RERUM Slug answers to two, and the
+ * server gathers for both -- see aliasTargetedAnnotations below, which issues
+ * the second query once the first read has handed over the document the client
+ * needs to build the other URI from.
  * @param {String} uri the entity URI.
  * @returns {Array<Object>} clauses for a Mongo-style `$or`.
  */

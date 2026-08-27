@@ -18,6 +18,14 @@
  * core-level deer#96 fix) — whichever protocol form each arrived with.  The
  * browser HTTP cache is the only data cache.
  *
+ * "Coordination, not a cache" is enforced at both ends.  An Entity leaves the
+ * map once its last subscriber unsubscribes (Entity#subscribe returns the
+ * teardown; the elements layer MUST call it from disconnectedCallback), because
+ * an Entity nobody is listening to has no coordination left to do and the HTTP
+ * cache makes re-resolving it nearly free.  And a record that turns out to
+ * answer to a URI another Entity already holds does not overwrite it — see
+ * Entity#adopt.
+ *
  * The two strategies are permanent, not scaffolding: `/expanded` does not carry
  * annotation `@id`s and, by deployment decision, is not going to.  So DEER owns
  * provenance, and the strategy split is how it does.  Two rules keep that from
@@ -219,6 +227,12 @@ function getEntity(id, { strategy = "display", upgrade = true } = {}) {
 /**
  * Drop all coordination state.  For teardown and tests only — live subscribers
  * keep their Entity references but new consumers will re-resolve.
+ *
+ * Ordinary sessions no longer need this to bound the map: an Entity releases its
+ * keys when its last subscriber leaves.  `editingIds` is the exception and is
+ * deliberately NOT tied to that — a reservation describes the ids a page's forms
+ * carry, not whether an Entity for one happens to exist right now, and dropping
+ * it early would silently downgrade a form's next read to the display path.
  */
 function clearEntities() {
     EntityMap.clear()
@@ -238,6 +252,12 @@ function clearEntities() {
  * `deer-id` attribute.  Constructing one begins resolving it; subscribers
  * listen on the instance for `update`, `reload`, `complete`, and `error`, or
  * call subscribe() to be caught up if resolution has already settled.
+ *
+ * An Entity may end up DELEGATING to another one that turned out to coordinate
+ * the same record (see #adopt).  Every public read here goes through a getter
+ * for that reason: an adopted Entity keeps working for whoever already holds it
+ * while owning no state of its own.  Nothing outside this class needs to know
+ * which of the two it is holding.
  * @class
  */
 class Entity extends EventTarget {
@@ -263,6 +283,25 @@ class Entity extends EventTarget {
     // is what tells `set data` an id change came from the read rather than from
     // a consumer reassigning the document.  See `set data`.
     #applying = false
+    // Annotations is a PUBLIC read surface but a private field, so an adopted
+    // Entity can delegate it.  Internal writers use this; nothing outside reads
+    // anything but the getter.
+    #annotations
+    // The Entity this one deferred to, if it lost an identity collision.  See
+    // #adopt.  Every read on this object delegates to it from then on.
+    #adopted
+    // Tears down the event forwarding #adopt set up, or undefined when this
+    // Entity is not currently forwarding.
+    #stopForwarding
+    // Every EntityMap key this Entity registered under.  A record is reached by
+    // more than one URI (the URI a consumer arrived with, the `@id` its read
+    // returned, its Slug alias), and #release has to remove ALL of them -- a key
+    // left pointing at a released Entity is worse than no release at all.
+    #mapKeys = new Set()
+    // Live subscribe() calls.  The map holds an Entity forever otherwise: it is
+    // render coordination, not a cache, so an Entity nothing is listening to has
+    // no coordination left to do.  See #release.
+    #subscribers = 0
 
     /**
      * @param {Object|String} entity object to be described (usually from a JSON-LD
@@ -287,20 +326,28 @@ class Entity extends EventTarget {
         const id = entity["@id"] ?? entity.id // @id is primary key
         if (typeof id !== "string" || id.length === 0) { throw new Error("Entity must have an id") }
         if (EntityMap.has(rerum.canonicalId(id))) { throw new Error(`Entity ${id} already exists. Use getEntity() to share it.`) }
-        this.Annotations = new Map()
+        this.#annotations = new Map()
         this.#strategy = (strategy === "editing") ? "editing" : "display"
         this.#id = id
         this.data = entity
     }
 
+    /**
+     * The annotations held against this Entity, keyed by version-chain root.
+     * Empty on the display strategy by design — see attachAnnotation.
+     */
+    get Annotations() {
+        return this.#adopted?.Annotations ?? this.#annotations
+    }
+
     /** "display" or "editing" — which read path resolves this Entity. */
     get strategy() {
-        return this.#strategy
+        return this.#adopted?.strategy ?? this.#strategy
     }
 
     /** True once a resolution has finished, successfully or not. */
     get settled() {
-        return this.#settled
+        return (this.#adopted !== undefined) ? this.#adopted.settled : this.#settled
     }
 
     /**
@@ -308,7 +355,7 @@ class Entity extends EventTarget {
      * Read with `settled` to tell "failed" from "still resolving".
      */
     get error() {
-        return this.#error
+        return (this.#adopted !== undefined) ? this.#adopted.error : this.#error
     }
 
     /**
@@ -317,11 +364,11 @@ class Entity extends EventTarget {
      * read from it here — the same way Annotation#id does.
      */
     get id() {
-        return this.#id
+        return this.#adopted?.id ?? this.#id
     }
 
     get data() {
-        return this._data
+        return (this.#adopted !== undefined) ? this.#adopted.data : this._data
     }
 
     /**
@@ -331,6 +378,7 @@ class Entity extends EventTarget {
      * Invalidated by anything that changes the document or its annotations.
      */
     get assertions() {
+        if (this.#adopted !== undefined) { return this.#adopted.assertions }
         // upgradeToEditing() flips #strategy before its read lands, so there is
         // a window where _data is still the SHAPED display document and the
         // editing branch below would merge over it.  structuredClone breaks the
@@ -386,7 +434,7 @@ class Entity extends EventTarget {
             // would build its next PUT body from.
             this.#assertions = deepFreeze(structuredClone((this.#strategy === "display")
                 ? this._data
-                : applyAssertions(this._data, [...this.Annotations.values()].map(a => a.data))))
+                : applyAssertions(this._data, [...this.#annotations.values()].map(a => a.data))))
         }
         return this.#assertions
     }
@@ -409,6 +457,7 @@ class Entity extends EventTarget {
      * form awaiting a prefill must not proceed as though it had one.
      */
     async assertionsForEditing() {
+        if (this.#adopted !== undefined) { return this.#adopted.assertionsForEditing() }
         if (this.#strategy !== "editing" && config.DEBUG) {
             console.warn(`${this.#id}: upgraded to the editing read on demand, discarding a display read already paid for. Reserve the ids your forms carry with reserveEditing() at scan time so the first read is the right one.`)
         }
@@ -418,6 +467,12 @@ class Entity extends EventTarget {
     }
 
     set data(entity) {
+        // An adopted Entity owns no document.  Assigning through it is assigning
+        // to the record, which the incumbent coordinates.
+        if (this.#adopted !== undefined) {
+            this.#adopted.data = entity
+            return
+        }
         // Adopt a shallow copy so the caller's object is never mutated.
         const candidate = { ...entity }
         if (objectMatch(this._data, candidate)) {
@@ -426,13 +481,38 @@ class Entity extends EventTarget {
         }
         const isFirstData = this._data === undefined
         const oldId = this.#id
+        const nextId = candidate["@id"] ?? candidate.id ?? oldId
+        const canonical = rerum.canonicalId(nextId)
+        // IDENTITY COLLISION, resolved BEFORE anything is mutated.  A record with
+        // a RERUM Slug answers to two URIs, and the alias can only be registered
+        // once a read has handed over the document -- so two consumers arriving
+        // by the two URIs within one read's latency both find the map empty and
+        // both construct.  Overwriting the incumbent here left one live Entity,
+        // with live subscribers, that nothing would ever route an update to:
+        // measured at 5 requests for one record, two objects, and whichever one
+        // resolved last silently winning both keys.  Deferring is the honest
+        // move -- this resolution has just discovered it is a duplicate of one
+        // already in hand.  Checked before `_data` is touched so an adopted
+        // Entity never half-applies a document it is about to disown.
+        const incumbent = EntityMap.get(canonical)
+        if (incumbent !== undefined && incumbent !== this) {
+            this.#adopt(incumbent)
+            return
+        }
         this._data = candidate
         this.#assertions = undefined
-        this.#id = candidate["@id"] ?? candidate.id ?? oldId
+        this.#id = nextId
+        // A resolution assigns #dataStrategy before it assigns here, so anything
+        // reaching this without #applying is a CONSUMER-supplied document, which
+        // came from neither read path -- exactly the position the constructor's
+        // stub is in.  Saying so keeps the upgrade guard in `assertions` pointed
+        // at the window it exists for instead of firing on a document that has
+        // nothing to do with it.
+        if (!this.#applying) { this.#dataStrategy = undefined }
         // When resolution changes the id, the previous key is left pointing at
         // this same Entity on purpose — consumers that arrived with the old URI
         // keep resolving to it rather than constructing a second object.
-        EntityMap.set(rerum.canonicalId(this.#id), this)
+        this.#register(canonical)
         // A record answering to a Slug answers to TWO URIs, and RERUM treats
         // them as one record — `/id/:_id` and `/id/:_id/expanded` both look up
         // `{$or: [{_id}, {__rerum.slug}]}`.  Registering the alias makes this
@@ -445,7 +525,7 @@ class Entity extends EventTarget {
         // #findAssertions constructs any Annotation, so the alias is in place
         // when the self-wiring runs.
         const slugUri = slugAliasOf(candidate)
-        if (slugUri !== undefined) { EntityMap.set(slugUri, this) }
+        if (slugUri !== undefined) { this.#register(slugUri) }
         // Silent while an editing resolution is mid-merge.  The raw entity
         // without its annotations is not a smaller version of the answer, it is
         // a document with NO PROVENANCE IN IT — same DEER shape, fewer keys, no
@@ -455,7 +535,7 @@ class Entity extends EventTarget {
         // assertion on every save instead of updating the annotation already
         // there: silent corruption, which is what this rewrite exists to end.
         // #findAssertions announces once, after the merge.
-        if (!this.#merging) { this.#announce("update", this.assertions) }
+        if (!this.#merging) { this.#announceShaped("update") }
         if (isFirstData) {
             // Construction begins resolution.  That is a first render, not a
             // reload, and the two must stay distinguishable.
@@ -485,8 +565,128 @@ class Entity extends EventTarget {
             // sometimes an Entity and sometimes a document means any consumer
             // reading `detail.payload.name` works for one event and breaks on
             // the other.
-            this.resolve().then(() => { if (this.#error === undefined) { this.#announce("reload", this.assertions) } })
+            this.resolve().then(() => { if (this.error === undefined) { this.#announceShaped("reload") } })
         }
+    }
+
+    /**
+     * Claim an EntityMap key for this Entity and remember that it did.  A record
+     * is reached by more than one URI, and #release has to give every one of them
+     * back — a key left pointing at a released Entity is worse than no release.
+     * @param {String} key the canonical map key.
+     */
+    #register = (key) => {
+        EntityMap.set(key, this)
+        this.#mapKeys.add(key)
+    }
+
+    /**
+     * Defer to the Entity already coordinating this record.
+     *
+     * Called only from `set data`, when a resolution discovers that the URI its
+     * document actually names is already held by a different Entity — the Slug
+     * collision described there.  This object keeps working for whoever already
+     * holds it: every read delegates to the incumbent, and the incumbent's
+     * lifecycle is re-dispatched here so subscribers registered on this object
+     * are caught up and stay current.  New consumers reach the incumbent
+     * directly, because every key this Entity claimed is re-pointed at it.
+     * @param {Entity} incumbent the Entity that holds the record's key.
+     */
+    #adopt = (incumbent) => {
+        this.#adopted = incumbent
+        // Re-point, not delete: a consumer that arrived by the URI this Entity
+        // was constructed with (the Slug, typically) must reach the survivor.
+        // The incumbent takes ownership so its own #release gives them back.
+        for (const key of this.#mapKeys) {
+            if (EntityMap.get(key) === this) { EntityMap.set(key, incumbent) }
+            incumbent.#mapKeys.add(key)
+        }
+        this.#mapKeys.clear()
+        // This Entity's own in-flight resolution is now redundant work whose
+        // result must not be applied.  Bumping the generation retires it through
+        // the checks #resolveURI already makes, so it lands and is discarded
+        // instead of settling this object over the top of the delegation.
+        this.#generation++
+        this._data = undefined
+        this.#assertions = undefined
+        this.#annotations = new Map()
+        this.#forwardFrom(incumbent)
+    }
+
+    /**
+     * Re-dispatch another Entity's lifecycle on this one.  #listen replays for an
+     * incumbent that has already settled, so a subscriber registered here before
+     * the adoption is caught up rather than left waiting for an event that
+     * already fired.
+     * @param {Entity} incumbent the Entity to forward from.
+     */
+    #forwardFrom = (incumbent) => {
+        this.#stopForwarding = incumbent.#listen((ev) => {
+            this.dispatchEvent(new CustomEvent(ev.detail.action, { detail: { ...ev.detail } }))
+        })
+    }
+
+    /**
+     * Give up this Entity's map keys once nothing is listening to it.
+     *
+     * EntityMap is render coordination, not a cache — an Entity no subscriber
+     * holds has no coordination left to do, and the browser HTTP cache makes
+     * re-resolving a re-rendered id nearly free.  Without this the map retains
+     * every record a session ever touched, each holding its document, a frozen
+     * assertions memo (a second full copy) and every annotation document behind
+     * it: measured at ~15.8 KB of heap per Entity, none of it ever returned.
+     *
+     * The Entity object itself is NOT destroyed — whoever still holds a
+     * reference keeps a working object, and subscribing again reclaims the keys.
+     * Only Entities that have had a subscriber are released; one that never had
+     * any may be seconds away from its first, and evicting on construction would
+     * defeat the deduplication this map exists for.
+     */
+    #release = () => {
+        for (const key of this.#mapKeys) {
+            if (EntityMap.get(key) === this) { EntityMap.delete(key) }
+        }
+        // #mapKeys is kept, not cleared: #reclaim restores the keys that are
+        // still free if this Entity is subscribed to again, which is the
+        // ordinary custom-element disconnect/reconnect cycle.
+        if (this.#stopForwarding !== undefined) {
+            this.#stopForwarding()
+            this.#stopForwarding = undefined
+        }
+    }
+
+    /** Re-enter the map after a #release, for a re-subscribed Entity. */
+    #reclaim = () => {
+        if (this.#adopted !== undefined) {
+            if (this.#stopForwarding === undefined) { this.#forwardFrom(this.#adopted) }
+            return
+        }
+        // Never over a live holder: while this Entity was released another may
+        // have claimed the key, and that one is the record's coordinator now.
+        for (const key of this.#mapKeys) {
+            if (!EntityMap.has(key)) { EntityMap.set(key, this) }
+        }
+    }
+
+    /**
+     * Announce with the shaped document, without letting the shaping throw out
+     * of a property setter.  `assertions` refuses to answer while _data and the
+     * strategy disagree, and applyAssertions can fail on a document it cannot
+     * merge; a throw escaping `set data` left the Entity torn — _data, #id and
+     * its map registration already changed, no announcement made, and no
+     * resolution pending to repair it. A document this Entity cannot shape is a
+     * failed resolution like any other, so it is reported as one.
+     * @param {String} action the lifecycle event to announce.
+     */
+    #announceShaped = (action) => {
+        let payload
+        try {
+            payload = this.assertions
+        } catch (err) {
+            this.#fail(err)
+            return
+        }
+        this.#announce(action, payload)
     }
 
     /**
@@ -499,6 +699,7 @@ class Entity extends EventTarget {
      * @returns {Promise<void>} settles when the re-resolution has been applied.
      */
     upgradeToEditing() {
+        if (this.#adopted !== undefined) { return this.#adopted.upgradeToEditing() }
         if (this.#strategy === "editing") {
             // Already on the right path.  resolve() would issue a whole new
             // read of a settled Entity for nothing; only an unsettled one has a
@@ -530,16 +731,46 @@ class Entity extends EventTarget {
      * @returns {Function} call to unsubscribe.
      */
     subscribe(handler) {
+        // First subscriber after a #release puts this Entity back in the map, so
+        // the ordinary custom-element disconnect/reconnect cycle does not leave
+        // a working Entity that no new consumer can find.
+        if (this.#subscribers === 0) { this.#reclaim() }
+        this.#subscribers++
+        const stop = this.#listen(handler)
+        // Idempotent: an element calling its unsubscribe twice (a disconnect
+        // followed by a teardown, say) must not decrement twice and release an
+        // Entity other subscribers are still holding.
+        let done = false
+        return () => {
+            if (done) { return }
+            done = true
+            stop()
+            this.#subscribers--
+            if (this.#subscribers === 0) { this.#release() }
+        }
+    }
+
+    /**
+     * Register a handler on the whole lifecycle and catch it up, WITHOUT
+     * counting it as a subscriber.  #adopt forwards through this: an adopter is
+     * not a consumer, and counting it would pin the incumbent in the map for as
+     * long as the adopter existed, which is the leak #release exists to close.
+     * Reads go through the public getters so an adopted Entity catches up from
+     * the record's real state rather than from its own empty shell.
+     * @param {Function} handler receives the same CustomEvents addEventListener would.
+     * @returns {Function} call to detach.
+     */
+    #listen = (handler) => {
         for (const action of LIFECYCLE) { this.addEventListener(action, handler) }
-        if (this.#settled) {
-            if (this.#error === undefined) {
+        if (this.settled) {
+            if (this.error === undefined) {
                 handler(this.#event("update", this.assertions))
                 // Replay `complete` too.  An element that renders on it would
                 // otherwise render only for the first subscriber — which is the
                 // several-elements-on-one-deer-id case this Map exists for.
                 handler(this.#event("complete"))
             } else {
-                handler(this.#event("error", this.#error))
+                handler(this.#event("error", this.error))
             }
         }
         return () => { for (const action of LIFECYCLE) { this.removeEventListener(action, handler) } }
@@ -554,6 +785,7 @@ class Entity extends EventTarget {
      * id, which has no stable identity to key on.
      */
     attachAnnotation(annotation) {
+        if (this.#adopted !== undefined) { return this.#adopted.attachAnnotation(annotation) }
         if (annotation.id === undefined || annotation.id === null) { return false }
         // A display Entity's assertions come pre-merged from the server, so the
         // `assertions` getter never reads this Map.  Holding an annotation here
@@ -565,7 +797,7 @@ class Entity extends EventTarget {
         // the editing path.  An upgrade rebuilds the Map from its own read, so
         // nothing is lost by declining now.
         if (this.#strategy === "display") { return false }
-        this.Annotations.set(versionRootId(annotation), annotation)
+        this.#annotations.set(versionRootId(annotation), annotation)
         this.#assertions = undefined
         return true
     }
@@ -580,6 +812,7 @@ class Entity extends EventTarget {
      * the Entity, so subscribers see it whenever they arrive.
      */
     resolve({ fresh = false } = {}) {
+        if (this.#adopted !== undefined) { return this.#adopted.resolve({ fresh }) }
         // Keyed by strategy as well as id: an editing caller must never be
         // handed a display resolution's promise, which resolves to a document
         // carrying no provenance at all.
@@ -638,7 +871,7 @@ class Entity extends EventTarget {
      * @param {Array<Object>} annotations annotation documents targeting this id.
      */
     #findAssertions = (annotations) => {
-        this.Annotations = new Map()
+        this.#annotations = new Map()
         // Rebuilding the Map changes the merge even when nothing re-attaches, so
         // the memo cannot survive it.  attachAnnotation invalidates for each
         // annotation this read DID return, and `set data` for a changed entity
@@ -732,7 +965,9 @@ class Entity extends EventTarget {
     #event = (action, payload) => new CustomEvent(action, {
         detail: {
             action,
-            id: this.#id,
+            // The delegating getter: an adopted Entity announces the record's
+            // real URI, not the alias it happened to be constructed with.
+            id: this.id,
             payload
         }
     })

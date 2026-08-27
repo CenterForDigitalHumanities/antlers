@@ -367,7 +367,11 @@ export function applyAssertions(entity, annotations = []) {
         const key = keys[0]
         const val = body[key]
         if (FORBIDDEN_KEYS.has(key)) {
-            console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts the reserved key '${key}'; ignoring.`)
+            // Gated, like the identity-key warning below it.  RERUM is open, so
+            // this is third-party-driven: an ungated warning here lets anyone
+            // annotating your entity fill the console of every page that renders
+            // it.  The assertion is refused either way.
+            if (config.DEBUG) { console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts the reserved key '${key}'; ignoring.`) }
             continue
         }
         if (IDENTITY_KEYS.includes(key)) {

@@ -3,12 +3,13 @@
  * @author Patrick Cuba <cubap@slu.edu>
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
- * Ported from the 0.11 UTILS.getValue / UTILS.getLabel with four behavioral
+ * Ported from the 0.11 UTILS.getValue / UTILS.getLabel with five behavioral
  * fixes: a failed type cast now throws to the caller instead of being swallowed
  * by a `finally { return … }` — including the NaN that parseFloat/parseInt
  * return in place of throwing — null input is treated as missing instead of
- * crashing the peek loop, the BOOLEAN cast is no longer inverted, and `asType`
- * is applied to every member of an array instead of being skipped entirely.
+ * crashing the peek loop, the BOOLEAN cast is no longer inverted, `asType`
+ * is applied to every member of an array instead of being skipped entirely, and
+ * a one-member array is no longer collapsed to its member (see getValue).
  */
 
 import config from './config.js'
@@ -64,8 +65,9 @@ function castValue(prop, asType) {
  * @param {any} property the property value to normalize.
  * @param {Array<String>|String} alsoPeek additional keys to check for a nested value.
  * @param {String} [asType] optional cast: STRING | NUMBER | INTEGER | BOOLEAN.
- * @returns {any} the normalized value.  An array in yields an array out, with
- * the cast applied member by member.
+ * @returns {any} the normalized value.  Arrayness is PRESERVED: an array in
+ * yields an array out, with the cast applied member by member, and a peeked
+ * one-member array stays a one-member array.
  */
 export function getValue(property, alsoPeek = [], asType) {
     let prop
@@ -96,7 +98,20 @@ export function getValue(property, alsoPeek = [], asType) {
         prop = property
     }
     if (asType) { prop = castValue(prop, asType) }
-    return (prop?.length === 1) ? prop[0] : prop
+    // Returned as-is.  0.11 ended with `(prop?.length === 1) ? prop[0] : prop`,
+    // which tested `.length` on a value it had not established was an array and
+    // was wrong three ways.  It DESTROYED any object carrying `length: 1` --
+    // `{length: 1, unit: "m"}` became `prop[0]`, i.e. undefined, so a manuscript
+    // 1 unit long lost its dimensions while one 12 units long kept them, on both
+    // read paths, with the merge counts agreeing and nothing able to report it.
+    // It made the return TYPE depend on the cardinality of the data: a Set read
+    // through alsoPeek came back `[]` at zero members, a bare string at one, and
+    // an array at two, so a caller that maps the result iterates characters for
+    // exactly the one-photo case.  And it contradicted the rule the merge side
+    // already settled -- see mergeAssertion, which keeps `contributed` arrayness
+    // for the same reason.  A caller that genuinely wants the scalar writes
+    // `[].concat(getValue(…))[0]`, where the intent is visible.
+    return prop
 }
 
 /**

@@ -156,7 +156,11 @@ export function isRerumId(id) {
     // on the same host.  RERUM is open — an annotation `target` is attacker-
     // supplied data, and Annotation#registerTargets reads ids straight out of
     // one — so the id that passes this gate must be the id that gets requested.
-    return config.ID_BASES.some(base => url.href.startsWith(base))
+    // Something must follow the base.  The base itself carries no `_id`, and
+    // expanded() builds its URL by concatenation, so it would produce
+    // `…/v1/id//expanded?generator=` -- a request against the wrong resource
+    // rather than a refusal, which is the failure this gate exists to prevent.
+    return config.ID_BASES.some(base => url.href.startsWith(base) && url.href.length > base.length)
 }
 
 /**
@@ -170,7 +174,10 @@ export function isRerumId(id) {
  * @throws {TypeError} when a relative URL has no base to resolve against.
  */
 function absoluteUrl(url) {
-    const base = config.BASE ?? globalThis.location?.href
+    // document.baseURI, not location.href: they differ on any page carrying a
+    // `<base href>`, and a deployment behind a same-origin proxy -- the one case
+    // relative URLS values exist for -- is the most likely to set one.
+    const base = config.BASE ?? globalThis.document?.baseURI ?? globalThis.location?.href
     try {
         return new URL(url, base).toString()
     } catch (err) {
