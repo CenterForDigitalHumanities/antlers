@@ -203,23 +203,8 @@ export async function clientRead(id, { fresh = false } = {}) {
 }
 
 /**
- * The URI an entity also answers to through its RERUM Slug, built the way
- * `idExpanded` builds `slugTargetId` — the entity's own URI up to its last
- * slash, plus the slug.
- * @param {Object} entity the raw entity document.
- * @returns {String|undefined} the slug URI, or undefined when there is no slug.
- */
-function slugTargetUri(entity) {
-    const slug = entity?.__rerum?.slug
-    if (typeof slug !== "string" || slug.length === 0) { return undefined }
-    const own = entity["@id"] ?? entity.id
-    const lastSlash = (typeof own === "string") ? own.lastIndexOf("/") : -1
-    return (lastSlash === -1) ? undefined : own.slice(0, lastSlash + 1) + slug
-}
-
-/**
  * Every URI this record answers to: its own `@id` and, when it has one, its
- * RERUM Slug URI.  `idExpanded` resolves the record with
+ * RERUM Slug URI (the shared rerum.slugUriOf construction).  `idExpanded` resolves the record with
  * `{$or: [{_id}, {__rerum.slug}]}` and then gathers annotations targeting BOTH
  * (`findLeafAnnotationsFor([targetId, slugTargetId], …)`), so a client read that
  * covers only the URI it happened to be ASKED for comes back short.
@@ -228,7 +213,7 @@ function slugTargetUri(entity) {
  */
 function recordUris(entity) {
     const own = entity?.["@id"] ?? entity?.id
-    return [own, slugTargetUri(entity)].filter(u => typeof u === "string" && u.length > 0)
+    return [own, rerum.slugUriOf(entity)].filter(u => typeof u === "string" && u.length > 0)
 }
 
 /**

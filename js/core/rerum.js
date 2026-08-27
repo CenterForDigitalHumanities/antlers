@@ -94,6 +94,26 @@ export function httpsIdArray(id) {
 }
 
 /**
+ * The second URI a record with a RERUM Slug answers to, built the way the
+ * server builds `slugTargetId` (crud.js idExpanded): the record's own URI up to
+ * its last slash, plus the slug.  Lives here, once, because two callers key on
+ * it — expand.js gathers annotations targeting it, entity.js registers it as an
+ * EntityMap alias — and a construction mirrored from the server must not be
+ * able to drift in two places.
+ * @param {Object} doc a resolved RERUM document.
+ * @returns {String|undefined} the slug URI as spelled by the document's own
+ * URI, or undefined when there is no slug or no usable URI.  NOT canonicalized;
+ * callers that key on it normalize through canonicalId like any other key.
+ */
+export function slugUriOf(doc) {
+    const slug = doc?.__rerum?.slug
+    if (typeof slug !== "string" || slug.length === 0) { return undefined }
+    const own = doc?.["@id"] ?? doc?.id
+    const lastSlash = (typeof own === "string") ? own.lastIndexOf("/") : -1
+    return (lastSlash === -1) ? undefined : own.slice(0, lastSlash + 1) + slug
+}
+
+/**
  * The deployment's RERUM agent, or a clear failure.  DEER has exactly ONE:
  * config.GENERATOR.  Every read filters annotations by it — `/expanded` through
  * `?generator=`, the client query through `__rerum.generatedBy` — and there is
@@ -198,7 +218,15 @@ function absoluteUrl(url) {
 function markStale(...ids) {
     const expires = Date.now() + STALE_TTL_MS
     for (const id of ids.flat(3)) {
-        const uri = (typeof id === "string") ? id : (id?.["@id"] ?? id?.id)
+        // Every target shape the reads match (TARGET_KEYS in ./expand.js): a
+        // bare URI, an object carrying one, or a W3C SpecificResource whose
+        // `source` is either.  The write side honoring fewer shapes than the
+        // read side meant an annotation targeting `{source: …}` never
+        // invalidated its target, and the next read of that entity served the
+        // pre-write merge from cache for up to the TTL.
+        const uri = (typeof id === "string") ? id
+            : (id?.["@id"] ?? id?.id
+                ?? ((typeof id?.source === "string") ? id.source : id?.source?.["@id"] ?? id?.source?.id))
         if (typeof uri !== "string" || uri.length === 0) { continue }
         if (!isRerumId(uri)) { continue }
         const key = canonicalId(uri)

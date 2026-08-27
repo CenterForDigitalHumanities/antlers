@@ -37,7 +37,7 @@
 import config from './config.js'
 import * as rerum from './rerum.js'
 import * as expand from './expand.js'
-import { applyAssertions } from './assertions.js'
+import { applyAssertions, shapeValues } from './assertions.js'
 
 const EntityMap = new Map()
 const inFlight = new Map()
@@ -57,19 +57,14 @@ const editingIds = new Set()
 const keyOf = (id) => rerum.canonicalId((typeof id === "string") ? id : id?.["@id"] ?? id?.id)
 
 /**
- * The second EntityMap key a record with a RERUM Slug answers to, built the way
- * the server builds `slugTargetId` (crud.js idExpanded): the record's own URI up
- * to its last slash, plus the slug.
+ * The second EntityMap key a record with a RERUM Slug answers to: the shared
+ * rerum.slugUriOf construction, canonicalized the way every map key is.
+ * canonicalId passes undefined through, so a record without a slug stays
+ * undefined here too.
  * @param {Object} doc a resolved entity document.
  * @returns {String|undefined} the canonical slug URI, or undefined without one.
  */
-function slugAliasOf(doc) {
-    const slug = doc?.__rerum?.slug
-    if (typeof slug !== "string" || slug.length === 0) { return undefined }
-    const own = doc["@id"] ?? doc.id
-    const lastSlash = (typeof own === "string") ? own.lastIndexOf("/") : -1
-    return (lastSlash === -1) ? undefined : rerum.canonicalId(own.slice(0, lastSlash + 1) + slug)
-}
+const slugAliasOf = (doc) => rerum.canonicalId(rerum.slugUriOf(doc))
 
 /** The events an Entity announces over its lifetime. */
 const LIFECYCLE = ["update", "reload", "complete", "error"]
@@ -302,6 +297,12 @@ class Entity extends EventTarget {
     // render coordination, not a cache, so an Entity nothing is listening to has
     // no coordination left to do.  See #release.
     #subscribers = 0
+    // Whether subscribe() has EVER been called.  #register consults both: a
+    // released Entity (had subscribers, has none) must stay out of the map,
+    // while a never-subscribed one still registers -- it may be seconds from
+    // its first subscriber, and evicting it on construction would defeat the
+    // deduplication the map exists for.
+    #everSubscribed = false
 
     /**
      * @param {Object|String} entity object to be described (usually from a JSON-LD
@@ -411,9 +412,15 @@ class Entity extends EventTarget {
         if (this.#assertions === undefined) {
             // The display read comes back already shaped by expand.forDisplay
             // and has no annotations to merge; only the editing read does.
-            // Cloned, not aliased: the display read is already shaped, so
-            // returning _data itself would hand out the Entity's own document.
-            // The editing branch already returns a fresh object.
+            // shapeValues still runs over it because a CONSUMER-assigned
+            // document is raw, and handing that out as-is broke the one-shape
+            // contract on exactly one of the two strategies -- the editing
+            // branch merges through applyAssertions, which ends in shapeValues
+            // either way.  Idempotent for the read path: set data's shallow
+            // copy preserves the SHAPED identity of every value object, so a
+            // forDisplay document passes through untouched.
+            // Cloned, not aliased, so no caller is handed the Entity's own
+            // document.  The editing branch already returns a fresh object.
             //
             // Frozen because the memo is SHARED, which the clone alone does not
             // address: every subscriber — including the ones subscribe() catches
@@ -433,7 +440,7 @@ class Entity extends EventTarget {
             // annotation shared with another Entity, and the very objects a form
             // would build its next PUT body from.
             this.#assertions = deepFreeze(structuredClone((this.#strategy === "display")
-                ? this._data
+                ? shapeValues(this._data)
                 : applyAssertions(this._data, [...this.#annotations.values()].map(a => a.data))))
         }
         return this.#assertions
@@ -576,8 +583,15 @@ class Entity extends EventTarget {
      * @param {String} key the canonical map key.
      */
     #register = (key) => {
-        EntityMap.set(key, this)
         this.#mapKeys.add(key)
+        // A released Entity must not re-claim map slots.  Unsubscribing does
+        // not cancel an in-flight read, and the landing read reaches here
+        // through `set data`; without this test it re-entered the map with zero
+        // subscribers, where nothing would ever evict it -- #release only fires
+        // on the 1 -> 0 transition.  The key is still recorded above, so
+        // #reclaim restores it if this Entity is ever subscribed again.
+        if (this.#everSubscribed && this.#subscribers === 0) { return }
+        EntityMap.set(key, this)
     }
 
     /**
@@ -735,6 +749,7 @@ class Entity extends EventTarget {
         // the ordinary custom-element disconnect/reconnect cycle does not leave
         // a working Entity that no new consumer can find.
         if (this.#subscribers === 0) { this.#reclaim() }
+        this.#everSubscribed = true
         this.#subscribers++
         const stop = this.#listen(handler)
         // Idempotent: an element calling its unsubscribe twice (a disconnect

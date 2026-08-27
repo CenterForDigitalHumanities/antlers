@@ -53,13 +53,18 @@ const config = {
 
 /**
  * Merge deployment overrides into the shipped defaults.
- * @param {Object} overrides partial config; URLS merges key-by-key, ID_BASES replaces wholesale.
+ * @param {Object} overrides partial config; URLS merges key-by-key, ID_BASES
+ * replaces wholesale and is normalized to trailing-slash form.
  * @returns {Object} the live config object.
  */
 export function configure(overrides = {}) {
     const { URLS, ID_BASES, ...rest } = overrides
     if (URLS) { Object.assign(config.URLS, URLS) }
-    if (ID_BASES) { config.ID_BASES = [...ID_BASES] }
+    // Normalized to end in "/": isRerumId and forDisplay's deployment lookup
+    // are prefix tests, and a base missing its trailing slash accepts sibling
+    // endpoints -- "…/v1/id" lets "…/v1/idiot/…" through the support gate that
+    // screens attacker-supplied annotation targets.
+    if (ID_BASES) { config.ID_BASES = ID_BASES.map(base => base.endsWith("/") ? base : `${base}/`) }
     Object.assign(config, rest)
     return config
 }
