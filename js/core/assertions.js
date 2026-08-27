@@ -180,6 +180,35 @@ export function buildValueObject(val, fromAnno = {}) {
 }
 
 /**
+ * Re-register an already-shaped document's value objects after a
+ * structuredClone, which produces new objects the SHAPED WeakSet has never
+ * seen.
+ *
+ * Idempotence here is by object IDENTITY, deliberately — `source` and `value`
+ * are ordinary vocabulary terms, so sniffing for them mistakes real data for a
+ * value object.  The cost is that identity does not survive a clone, and
+ * Entity#assertions hands every subscriber a CLONE.  Without this, the memoized
+ * document an element receives as `detail.payload` is unrecognizable as shaped,
+ * and anything that shapes it again unwraps and re-wraps each value — output
+ * that looks correct and has silently lost every `citationSource`, which is what
+ * makes the next form save POST a duplicate assertion instead of updating.
+ *
+ * Identity keys are skipped: shapeValues passes them through untouched, so they
+ * are not value objects and branding them would claim otherwise.
+ * @param {Object} shaped a document this module produced, then cloned.
+ * @returns {Object} the same document.
+ */
+export function markShaped(shaped) {
+    for (const [key, val] of Object.entries(requireDocument(shaped, "Marking shaped"))) {
+        if (IDENTITY_KEYS.includes(key)) { continue }
+        for (const v of [val].flat()) {
+            if (v !== null && typeof v === "object") { SHAPED.add(v) }
+        }
+    }
+    return shaped
+}
+
+/**
  * The RERUM `_id` a document is stored under: the last path segment of its URI.
  * That is literally what the server matches on — `GET /v1/id/:_id/expanded`
  * looks the record up by this segment.

@@ -115,6 +115,55 @@ const TARGET_KEYS = ["target", "target.@id", "target.id",
 const escapeRegex = (literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 
 /**
+ * Every document matching a query, not just the first page.
+ *
+ * The server pages nothing — `findLeafAnnotationsFor`
+ * (rerum_server_nodejs/controllers/utils.js) streams a single cursor, and its
+ * EXPANSION_BATCH_SIZE is a transfer stride rather than a limit — so a client
+ * that stopped at one page diverged from `/expanded` on any entity carrying
+ * more than config.LIMIT annotations, and lost the `source.citationSource` of
+ * every annotation past it.  That loss was silent by construction: the result
+ * is a well-formed document with fewer keys, which no count can report.
+ *
+ * ONE request for an ordinary record: the loop exits on the first page that
+ * comes back short, which is every page for an entity with fewer than
+ * config.LIMIT assertions.
+ *
+ * Deduplicated because `POST /query` applies `skip` to an UNSORTED find, so a
+ * document can in principle be seen twice across page boundaries — and a
+ * duplicate here is not a wasted slot but a doubled value, since
+ * applyAssertions merges the array it is handed.
+ * @param {Object} body the query document.
+ * @param {String} label what is being read, for the refusal message.
+ * @returns {Promise<Array<Object>>} every matching document.
+ * @throws {RangeError} past config.MAX_RESULTS, rather than returning a partial merge.
+ */
+async function queryAll(body, label) {
+    // Guarded: a deployment that configures LIMIT at 0 or below would otherwise
+    // page forever, asking for nothing each time.
+    const page = Math.max(1, config.LIMIT)
+    const all = []
+    const seen = new Set()
+    for (let skip = 0; ; skip += page) {
+        const finds = await rerum.query(body, { limit: page, skip })
+        const list = Array.isArray(finds) ? finds : []
+        for (const doc of list) {
+            const key = rerum.canonicalId(doc?.["@id"] ?? doc?.id)
+            // A document with no id has no identity to dedupe on.  It is kept —
+            // the reads downstream discard it on their own terms.
+            if (typeof key !== "string") { all.push(doc); continue }
+            if (seen.has(key)) { continue }
+            seen.add(key)
+            all.push(doc)
+        }
+        if (list.length < page) { return all }
+        if (all.length >= config.MAX_RESULTS) {
+            throw new RangeError(`${label}: more than ${config.MAX_RESULTS} documents match this read. Refusing to return a partial merge — it would look complete and make the next form save POST a duplicate assertion for everything past the cut.`)
+        }
+    }
+}
+
+/**
  * Every way an Annotation can name this entity as its target: each target key
  * against both protocol spellings, and each against a FRAGMENT of the URI
  * (`…#xywh=0,0,100,100`), which is the other W3C way to target part of a
@@ -148,10 +197,11 @@ function targetingClauses(uri) {
  * handed a merged document could no longer tell its own values from asserted
  * ones, and re-merging over it duplicates every value.
  *
- * ONE round trip — a compound `$or` query matching the entity's own @id
- * alongside every targeting style.  The leaf filter excludes an entity that has
- * since been updated, and a full page can crowd it out, so the entity is
- * recovered with a direct GET when the query did not return it.
+ * ONE round trip for an ordinary record — a compound `$or` query matching the
+ * entity's own @id alongside every targeting style, paged only when a page comes
+ * back full (see queryAll).  The leaf filter excludes an entity that has since
+ * been updated, and a full page can crowd it out, so the entity is recovered
+ * with a direct GET when the query did not return it.
  * @param {String|Object} id the entity URI or an object carrying one.
  * @param {Object} options `fresh` busts the HTTP cache on the recovery GET.
  * @returns {Promise<{entity: Object, annotations: Array<Object>}>} raw documents:
@@ -170,7 +220,7 @@ export async function clientRead(id, { fresh = false } = {}) {
     // them filling the page and crowding out the ones that are.  It must not
     // reach the `@id` branch — the entity itself may well have been created by
     // a different application, and it is still the entity we asked for.
-    const finds = await rerum.query({
+    const list = await queryAll({
         "$or": [
             { "@id": uris },
             {
@@ -181,14 +231,7 @@ export async function clientRead(id, { fresh = false } = {}) {
             }
         ],
         "__rerum.history.next": { "$exists": true, "$size": 0 }
-    })
-    const list = Array.isArray(finds) ? finds : []
-    if (list.length >= config.LIMIT) {
-        // Not gated behind DEBUG: a dropped annotation costs the editing
-        // path a citationSource, and a missing citationSource makes the next
-        // save POST a duplicate assertion instead of updating.
-        console.warn(`${uri}: compound query returned a full page (limit ${config.LIMIT}). Annotations beyond the limit are not merged and their provenance is lost — a form prefilled from this read may create duplicate assertions.`)
-    }
+    }, uri)
     // `@id` or `id` — RERUM negotiates which one it returns from the
     // document's own @context, so a document authored against
     // anno.jsonld comes back keyed `id`.  Matching only `@id` would miss
@@ -249,17 +292,13 @@ async function aliasTargetedAnnotations(entity, requestedUri, found) {
     const requested = rerum.canonicalId(requestedUri)
     const aliases = recordUris(entity).filter(u => rerum.canonicalId(u) !== requested)
     if (aliases.length === 0) { return [] }
-    const finds = await rerum.query({
+    const list = await queryAll({
         "$and": [
             { "$or": aliases.flatMap(targetingClauses) },
             { "__rerum.generatedBy": rerum.generatedBy() }
         ],
         "__rerum.history.next": { "$exists": true, "$size": 0 }
-    })
-    const list = Array.isArray(finds) ? finds : []
-    if (list.length >= config.LIMIT) {
-        console.warn(`${aliases.join(", ")}: alias-targeting query returned a full page (limit ${config.LIMIT}). Annotations beyond the limit are not merged and their provenance is lost — a form prefilled from this read may create duplicate assertions.`)
-    }
+    }, aliases.join(", "))
     // An annotation can name the entity by BOTH URIs, and the entity itself can
     // come back here when the slug resolves to it, so dedupe on what the first
     // query already produced rather than trusting the two result sets to be

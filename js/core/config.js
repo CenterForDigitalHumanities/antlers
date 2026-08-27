@@ -40,9 +40,15 @@ const config = {
     // outside one -- there is no location to borrow.
     BASE: undefined,
 
-    // Query paging defaults, matching the 0.11 QUERY URL parameters.
+    // Query paging defaults, matching the 0.11 QUERY URL parameters.  LIMIT is
+    // the PAGE size, not a ceiling -- expand.queryAll pages until a page comes
+    // back short, so a read is one request for any ordinary record.
     LIMIT: 50,
     SKIP: 0,
+
+    // The most documents one read pages through before it refuses.  A runaway
+    // backstop rather than a tuning knob.
+    MAX_RESULTS: 1000,
 
     // Verbose library logging (missing-value lookups, skipped assertions).
     DEBUG: false,

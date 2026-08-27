@@ -37,7 +37,7 @@
 import config from './config.js'
 import * as rerum from './rerum.js'
 import * as expand from './expand.js'
-import { applyAssertions, shapeValues } from './assertions.js'
+import { applyAssertions, markShaped, shapeValues } from './assertions.js'
 
 const EntityMap = new Map()
 const inFlight = new Map()
@@ -192,6 +192,12 @@ function reserveEditing(...ids) {
  */
 function getEntity(id, { strategy = "display", upgrade = true } = {}) {
     const key = keyOf(id)
+    // Refused here rather than left to the constructor, so all three ways of
+    // arriving without an id fail identically.  keyOf(null) is undefined, the
+    // map lookup misses, and `new Entity(null)` would throw a bare "Cannot read
+    // properties of null (reading '@id')" -- and null is the likeliest way to
+    // get here, because getAttribute() returns it for a missing deer-id.
+    if (typeof key !== "string" || key.length === 0) { throw new Error("Entity must have an id") }
     const existing = EntityMap.get(key)
     if (existing) {
         // "editing" is a superset of "display": it carries per-annotation
@@ -230,6 +236,13 @@ function getEntity(id, { strategy = "display", upgrade = true } = {}) {
  * it early would silently downgrade a form's next read to the display path.
  */
 function clearEntities() {
+    // Retire every in-flight read BEFORE the map is emptied.  Clearing the map
+    // does not cancel a fetch, and a resolution that lands afterwards
+    // re-registers its Entity through `set data` -- #register only refuses an
+    // Entity that has been RELEASED, and a never-subscribed one has not been.
+    // Measured: map size 0, then 1 again a second later, holding the same object
+    // this teardown was called to be rid of.
+    for (const held of new Set(EntityMap.values())) { held.retire() }
     EntityMap.clear()
     inFlight.clear()
     editingIds.clear()
@@ -439,9 +452,17 @@ class Entity extends EventTarget {
             // froze documents this Entity does not own: a multi-target
             // annotation shared with another Entity, and the very objects a form
             // would build its next PUT body from.
-            this.#assertions = deepFreeze(structuredClone((this.#strategy === "display")
+            // markShaped re-brands the clone.  Shaping is idempotent by object
+            // IDENTITY (assertions.SHAPED), and structuredClone produces objects
+            // that WeakSet has never seen -- so without this the memo handed to
+            // every subscriber is unrecognizable as shaped, and anything that
+            // shapes it again unwraps and re-wraps each value, silently losing
+            // every citationSource.  deepFreeze makes an accidental MUTATION of
+            // the shared memo loud; this is what makes an accidental RESHAPE of
+            // it harmless.
+            this.#assertions = deepFreeze(markShaped(structuredClone((this.#strategy === "display")
                 ? shapeValues(this._data)
-                : applyAssertions(this._data, [...this.#annotations.values()].map(a => a.data))))
+                : applyAssertions(this._data, [...this.#annotations.values()].map(a => a.data)))))
         }
         return this.#assertions
     }
@@ -768,6 +789,21 @@ class Entity extends EventTarget {
     }
 
     /**
+     * Discard whatever read is in flight on this Entity, so its result is never
+     * applied.  Bumping the generation retires it through the checks
+     * #resolveURI already makes, exactly the way #adopt and upgradeToEditing()
+     * retire a read they have superseded.
+     *
+     * For teardown only — clearEntities() calls it.  The Entity is not failed
+     * and not destroyed: whoever still holds a reference keeps a working object
+     * and can resolve() it again.
+     */
+    retire() {
+        if (this.#adopted !== undefined) { this.#adopted.retire(); return }
+        this.#generation++
+    }
+
+    /**
      * Subscribe to this Entity's whole lifecycle.  A subscriber that arrives
      * after resolution settled — an element upgraded later in the document,
      * sharing a deer-id with an earlier one — is caught up immediately, because
@@ -1069,10 +1105,24 @@ class Annotation {
         return this.data["@id"] ?? this.data.id // id is primary key
     }
 
-    // Self-wiring: an id not already coordinated gets an Entity, and a new
-    // Entity begins resolving itself.  An annotation with several targets
-    // therefore pulls its other targets (and their annotations) into memory as
-    // a side effect of resolving the first one.
+    // Self-wiring: an annotation attaches itself to every target the page is
+    // ALREADY coordinating, so an annotation returned by one entity's read
+    // reaches the other entities on the page that it also asserts about.
+    //
+    // It does not CONSTRUCT an Entity for a target nothing holds.  Constructing
+    // one begins resolving it, so reading entity A pulled entity B — and B's
+    // annotations — over the network as a side effect of a read nobody asked
+    // for; and because #release only fires on the subscriber 1 -> 0 transition,
+    // an Entity created here never gets a subscriber and so can NEVER be
+    // released.  It held its document, its assertions memo and every annotation
+    // behind it for the life of the session — measured at two map entries and
+    // two unrequested queries from a single two-target annotation, which is the
+    // retention #release exists to prevent, reopened on a path it cannot reach.
+    //
+    // Nothing is lost by declining: the Entity whose read produced this
+    // annotation attaches it explicitly (see Entity#findAssertions), and an
+    // Entity resolved later runs its own query, which matches on every target
+    // key and returns this annotation again.
     #registerTargets = () => {
         let targets = this.data.target
         if (!Array.isArray(targets)) { targets = [targets] }
@@ -1080,23 +1130,12 @@ class Annotation {
             if (!target) { continue }
             target = target["@id"] ?? target.id ?? ((typeof target === "string") ? target : undefined)
             if (!target) { continue }
-            // A backstop, not an expected case.  DEER forms annotate the RERUM
-            // entity they just created, and expand.clientRead now hands over
-            // only annotations this deployment wrote, so every target reaching
-            // here should already be RERUM-hosted.  Should is not is: the reads
-            // REFUSE a non-RERUM id, so an anomalous target would otherwise
-            // construct an Entity that can only fail — a dead EntityMap key and
-            // a spurious `error` event for data nobody asked to load.  The
-            // Annotation is still held by the Entity whose read produced it.
-            if (!rerum.isRerumId(target)) {
-                if (config.DEBUG) { console.warn(`Annotation ${this.id} targets ${target}, which is outside RERUM. Not resolving it; the annotation is still attached to its RERUM targets.`) }
-                continue
-            }
-            // Holding Annotation objects only matters to the editing path, so a
-            // target discovered this way is created as an editing Entity — but
-            // upgrade is off, because a view rendering elsewhere on the page
-            // should not be re-read out from under itself as a side effect.
-            getEntity(target, { strategy: "editing", upgrade: false }).attachAnnotation(this)
+            // A target outside RERUM, or one carrying a fragment, simply finds
+            // no holder — the map is keyed by canonical RERUM URIs — so it needs
+            // no gate of its own now that nothing is constructed here.
+            const held = EntityMap.get(rerum.canonicalId(target))
+            if (held === undefined) { continue }
+            held.attachAnnotation(this)
         }
     }
 }
