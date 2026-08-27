@@ -121,7 +121,7 @@ export function generatedBy() {
 }
 
 /**
- * DEER only supports data hosted by RERYM and nothing else, so this is the
+ * DEER only supports data hosted by RERUM and nothing else, so this is the
  * support gate.  Entity ids stay on config.ID_BASES.
  *
  * @param {String} id the URI to test.
@@ -192,9 +192,9 @@ function sweepStale() {
 }
 
 /**
- * Checks if this read should bust the HTTP cache.  True once per request URL per
- * write, so the first read after a write revalidates and later reads are served
- * from the refreshed cache entry.
+ * Checks if this read should bust the HTTP cache.  True until a read of this
+ * request URL comes back ok after the write — markRefreshed records that — so
+ * a failed reload does not spend the invalidation.
  */
 function needsReload(uri, url) {
     const key = canonicalId(uri)
@@ -204,9 +204,15 @@ function needsReload(uri, url) {
         staleIds.delete(key)
         return false
     }
-    if (entry.refreshed.has(url)) { return false }
-    entry.refreshed.add(url)
-    return true
+    return !entry.refreshed.has(url)
+}
+
+/**
+ * Record that a cache-busting read of this request URL succeeded, so later
+ * reads are served from the refreshed cache entry.
+ */
+function markRefreshed(uri, url) {
+    staleIds.get(canonicalId(uri))?.refreshed.add(url)
 }
 
 /**
@@ -263,7 +269,9 @@ async function handleResponse(response) {
 export async function resolve(id, { fresh = false } = {}) {
     const uri = canonicalId(idOf(id))
     const reload = needsReload(uri, uri) || fresh
-    return fetcher(uri, reload ? { cache: "reload" } : {}).then(handleResponse)
+    const response = await fetcher(uri, reload ? { cache: "reload" } : {})
+    if (reload && response.ok) { markRefreshed(uri, uri) }
+    return handleResponse(response)
 }
 
 /**
@@ -285,6 +293,7 @@ export async function expanded(id, { fresh = false } = {}) {
     const url = `${uri}/expanded?generator=${encodeURIComponent(requireGenerator())}`
     const reload = needsReload(uri, url) || fresh
     const response = await fetcher(url, reload ? { cache: "reload" } : {})
+    if (reload && response.ok) { markRefreshed(uri, url) }
     const document = await handleResponse(response)
     return {
         document,

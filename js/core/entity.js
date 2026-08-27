@@ -43,6 +43,8 @@ const LIFECYCLE = ["update", "reload", "complete", "error"]
  * @returns {Boolean} whether the two match key-for-key.
  */
 function objectMatch(o1 = {}, o2 = {}) {
+    // The defaults only cover undefined — a null must not reach Object.keys.
+    if (o1 === null || o2 === null) { return o1 === o2 }
     // `["a"]` and `{0: "a"}` produce identical Object.keys.  This drives the
     // no-op suppression in `set data`, so without the guard a real change is
     // swallowed and no `update` ever announces.
@@ -92,7 +94,7 @@ function sameId(a, b) {
 
 /**
  * The stable identity of an annotation across its RERUM versions: the root of
- * its version chain Keying Annotations by this means an updated annotation
+ * its version chain.  Keying Annotations by this means an updated annotation
  * REPLACES the version it supersedes instead of accumulating beside it.
  * Without this, a read after a write merges the stale value and the new one together.
  *
@@ -218,14 +220,18 @@ class Entity extends EventTarget {
     // that resolution can tell its result is no longer wanted.
     #generation = 0
     // True only while an editing resolution is between writing the raw entity
-    // and merging its annotations..
+    // and merging its annotations.
     #merging = false
     // True only while a resolution is writing its own result into _data, which
     // is what tells `set data` an id change came from the read rather than from
     // a consumer reassigning the document.
     #applying = false
+    // True only while #findAssertions is rebuilding the annotation map, so the
+    // rebuild announces once for the whole batch rather than once per attach.
+    #rebuilding = false
     // Annotations is a PUBLIC read surface but a private field, so an adopted
-    // Entity can delegate it.  Internal writers use this,
+    // Entity can delegate it.  Internal writers use this field; external
+    // readers go through the `Annotations` getter.
     #annotations
     // The Entity this one deferred to, if it lost an identity collision.  See
     // #adopt.  Every read on this object delegates to it from then on.
@@ -495,8 +501,8 @@ class Entity extends EventTarget {
 
     /**
      * Announce with the shaped document, without letting the shaping throw out
-     * of a property setter. A document this Entity cannot shape is afailed resolution
-     * like any other, so it is reported as one.
+     * of a property setter. A document this Entity cannot shape is a failed
+     * resolution like any other, so it is reported as one.
      *
      * @param {String} action the lifecycle event to announce.
      */
@@ -607,7 +613,10 @@ class Entity extends EventTarget {
 
     /**
      * Hold an annotation against this Entity, keyed by version-chain root so a
-     * new version replaces the one it supersedes.
+     * new version replaces the one it supersedes.  One that arrives outside
+     * this Entity's own read — self-wired from another entity's read that also
+     * targets this one — announces `update`, so settled subscribers repaint;
+     * re-attaching what is already held announces nothing.
      *
      * @param {Annotation} annotation the annotation to hold.  Its id may be
      * recorded as `@id` or `id`; Annotation#id reads either.
@@ -618,8 +627,14 @@ class Entity extends EventTarget {
         if (this.#adopted !== undefined) { return this.#adopted.attachAnnotation(annotation) }
         if (annotation.id === undefined || annotation.id === null) { return false }
         if (this.#strategy === "display") { return false }
-        this.#annotations.set(versionRootId(annotation), annotation)
+        const root = versionRootId(annotation)
+        const held = this.#annotations.get(root)
+        // Re-attaching what is already held asserts nothing new, and must not
+        // invalidate or re-announce on every read that happens to return it.
+        if (held !== undefined && held.id === annotation.id && objectMatch(held.data, annotation.data)) { return true }
+        this.#annotations.set(root, annotation)
         this.#assertions = undefined
+        if (!this.#rebuilding && this.#settled && this.#error === undefined) { this.#announceShaped("update") }
         return true
     }
 
@@ -672,8 +687,13 @@ class Entity extends EventTarget {
     #findAssertions = (annotations) => {
         this.#annotations = new Map()
         this.#assertions = undefined
-        for (const anno of annotations) {
-            this.attachAnnotation(new Annotation(anno))
+        this.#rebuilding = true
+        try {
+            for (const anno of annotations) {
+                this.attachAnnotation(new Annotation(anno))
+            }
+        } finally {
+            this.#rebuilding = false
         }
         this.#announce("update", this.assertions)
         this.#settled = true
@@ -769,7 +789,12 @@ class Annotation {
         if (!Array.isArray(targets)) { targets = [targets] }
         for (let target of targets) {
             if (!target) { continue }
-            target = target["@id"] ?? target.id ?? ((typeof target === "string") ? target : undefined)
+            // Mirrors the TARGET_KEYS the reads match: a plain URI, an object
+            // bearing one, or a W3C SpecificResource naming it under `source`.
+            target = target["@id"] ?? target.id
+                ?? target.source?.["@id"] ?? target.source?.id
+                ?? ((typeof target.source === "string") ? target.source : undefined)
+                ?? ((typeof target === "string") ? target : undefined)
             if (!target) { continue }
             // A target outside RERUM, or one carrying a fragment, simply finds
             // no holder — the map is keyed by canonical RERUM URIs — so it needs

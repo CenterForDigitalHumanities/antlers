@@ -32,7 +32,7 @@ export const IDENTITY_KEYS = ["@id", "id", "_id", "@type", "type", "@context", "
 
 /**
  * Keys an Annotation may never assert onto an entity and that never survive
- * shaping.  The prototype-pollution corner of the server'sPROTECTED_EXPANSION_KEYS.
+ * shaping.  The prototype-pollution corner of the server's PROTECTED_EXPANSION_KEYS.
  */
 export const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"])
 
@@ -102,8 +102,8 @@ export function requireDocument(doc, context = "This read") {
  * Regularizes assertions to enforce the existence of a `source` key.
  * The return is only the value of the assertion, so the desired key must be
  * applied upstream from the scope of this function.  Survives the heterogeneous
- * arrays `/expanded` produces, and is idempotent.  Avalue object this module
- * already built is returned unchanged, which is what lets shapeValues run over 
+ * arrays `/expanded` produces, and is idempotent.  A value object this module
+ * already built is returned unchanged, which is what lets shapeValues run over
  * a partly merged document.
  *
  * @param {any} val asserted value of the incoming annotation.
@@ -215,6 +215,7 @@ export function shapeValues(obj) {
  * Merged values carry `source.citationSource` = the asserting annotation's @id,
  * which is what keeps the create-vs-update trigger working on the editing path.
  * The entity's own values are preserved alongside annotation values, matching
+ * the server's `/expanded` merge (the record's own value first).
  *
  * @param {Object} entity the resolved entity document, RAW — pass the fetched
  * document, never an already-shaped one.

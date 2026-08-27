@@ -73,9 +73,14 @@ async function queryAll(body, label) {
     const page = Math.max(1, config.LIMIT)
     const all = []
     const seen = new Set()
+    // Counts RAW documents fetched, not deduped ones: a proxy that ignores
+    // `skip` serves the same full page forever, and a deduped count would hold
+    // still while the loop hammered it.
+    let fetched = 0
     for (let skip = 0; ; skip += page) {
         const finds = await rerum.query(body, { limit: page, skip })
         const list = Array.isArray(finds) ? finds : []
+        fetched += list.length
         for (const doc of list) {
             const key = rerum.canonicalId(doc?.["@id"] ?? doc?.id)
             // A document with no id has no identity to dedupe on.  It is kept —
@@ -86,8 +91,8 @@ async function queryAll(body, label) {
             all.push(doc)
         }
         if (list.length < page) { return all }
-        if (all.length >= config.MAX_RESULTS) {
-            throw new RangeError(`${label}: more than ${config.MAX_RESULTS} documents match this read. Refusing to return a partial merge — it would look complete and make the next form save POST a duplicate assertion for everything past the cut.`)
+        if (fetched >= config.MAX_RESULTS) {
+            throw new RangeError(`${label}: ${config.MAX_RESULTS} documents fetched without reaching the end of this read — more match than the backstop allows, or the query endpoint is ignoring 'skip'. Refusing to return a partial merge — it would look complete and make the next form save POST a duplicate assertion for everything past the cut.`)
         }
     }
 }
