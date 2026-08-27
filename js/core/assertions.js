@@ -1,26 +1,18 @@
 /**
  * @module assertions Annotation-merge logic and DEER value shaping.
- * @author Patrick Cuba <cubap@slu.edu>
+ *
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
  * buildValueObject is lifted from the 0.11 UTILS.expand internals;
  * applyAssertions is ported from releases/rc-1.0/js/entities.js.
  *
  * Neither this module nor its callers decide WHOSE annotations to merge.  That
- * filter is part of the read — `?generator=` on the server path, the
- * `__rerum.generatedBy` clause in expand.clientRead's query on the client one —
- * so applyAssertions merges exactly what it is handed.  0.11 and rc-1.0 filtered
- * here instead, with a checkMatch that compared the annotation's generator to
- * the ENTITY's; that silently disagreed with the server, which has always
- * compared against the deployment's own agent, whenever an app read an entity
- * some other app created.
+ * filter is part of the read on BOTH paths — `?generator=` on the server one,
+ * the `__rerum.generatedBy` clause in expand.clientRead's query on the client.
  *
- * shapeValues lives here because both read paths finish with it: the client
- * merge below and the server `/expanded` response in ./expand.js come out
- * identically shaped, so `source.citationSource` is the only thing that differs
- * between them.  Keeping that true means matching the server's body-reading
- * rules, not just its output shape — see TEXTUAL_BODY_TYPES and the bodyValue
- * handling in applyAssertions.
+ * DEER emulates RERUM and so the decisions on how to format Annotations for expansion
+ * mirrors what the RERUM API does.  These need to be kept in sync for the best functional
+ * experience.
  */
 
 import config from './config.js'
@@ -30,42 +22,23 @@ import { getValue } from './normalize.js'
  * First-class properties of the entity itself — passed through shaping
  * untouched, and never merged into.  An annotation asserting one of these is
  * ignored: a DEER app declares `type`, `@type`, and `@context` directly on the
- * entity it creates and never relies on an Annotation to assert them, so an
- * annotation that tries to is either a mistake or someone else redefining what
- * your entity IS and what its properties MEAN.  RERUM is open, so that is not a
- * hypothetical.  `__rerum` carries the record's provenance, and `@id`/`id`
- * are the primary key, so those must never be wrapped either.  `_id` and
- * `__deleted` are here for the same reason: an Annotation asserting either is
- * claiming to rewrite the record's primary key or to bury it.
+ * entity it creates and never relies on an Annotation to assert them.
  *
  * This list is the client half of the server's PROTECTED_EXPANSION_KEYS
- * (rerum_server_nodejs/controllers/utils.js) — same membership, minus
- * `__proto__`, which FORBIDDEN_KEYS below handles more strictly.  Because the
- * server refuses these too, forDisplay can trust its merge for identity and
- * read it with a single request; keep the two lists in step or the read paths
- * will disagree about what an Annotation is allowed to say.
- *
- * isAnnotationType reads type off RAW fetched documents, never shaped ones, so
- * it is unaffected by anything here.
+ * Since the server refuses these too, forDisplay can trust its merge for identity and
+ * read it with a single request.
  */
 export const IDENTITY_KEYS = ["@id", "id", "_id", "@type", "type", "@context", "__rerum", "__deleted"]
 
 /**
  * Keys an Annotation may never assert onto an entity and that never survive
- * shaping.  The prototype-pollution corner of the server's
- * PROTECTED_EXPANSION_KEYS (rerum_server_nodejs/controllers/utils.js);
- * IDENTITY_KEYS above covers the rest of that list.  structuredClone plus
- * Object.entries already absorb a `__proto__` body in practice, but that safety
- * is incidental — a document parsed straight from JSON carries `__proto__` as
- * an OWN property, which Object.entries does yield.  One Set membership test
- * makes the guard deliberate instead of lucky.
+ * shaping.  The prototype-pollution corner of the server'sPROTECTED_EXPANSION_KEYS.
  */
 export const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"])
 
 /**
  * Body types the server folds whole into a single `bodyValue` assertion rather
- * than reading key by key (rerum_server_nodejs/controllers/crud.js
- * TEXTUAL_BODY_TYPES).  Mirrored here so the two read paths agree on the KEY a
+ * than reading key by key.  Mirrored here so the two read paths agree on the KEY a
  * TextualBody lands under, not merely on the shape of the value.
  */
 export const TEXTUAL_BODY_TYPES = new Set([
@@ -75,21 +48,13 @@ export const TEXTUAL_BODY_TYPES = new Set([
 
 /**
  * Objects this module has already shaped.  Identity-based, so a value object is
- * recognized because THIS module made it — never because it happens to carry a
- * `source` or `value` key.  Sniffing for those keys silently mistook ordinary
- * vocabulary (`{source: "Book A", value: "p. 12"}`) for an already-shaped value
- * and dropped its citationSource, which makes the next form save POST a
- * duplicate assertion instead of updating the existing one.
+ * recognized because this module made it.
  */
 const SHAPED = new WeakSet()
 
 /**
- * The Annotation type spellings the server anticipates
- * (rerum_server_nodejs/controllers/utils.js annoTypeConditions).  Mirrored here
- * because this list decides which documents the CLIENT read merges: a spelling
- * the server gathers and this set does not is an annotation `/expanded` merges
- * and the client path silently drops — and the merge counts agree, so
- * forDisplay's divergence guard never fires.
+ * The Annotation type spellings the server anticipates.  Mirrored here
+ * because this list decides which documents the CLIENT read merges.
  */
 const ANNOTATION_TYPES = new Set([
     "Annotation", "oa:Annotation",
@@ -97,19 +62,9 @@ const ANNOTATION_TYPES = new Set([
 ])
 
 /**
- * Is this `type`/`@type` value an Annotation?  Accepts a string or an array of
- * strings, and matches EXACTLY the spellings the server's annoTypeConditions
- * match — no substring test, no namespace-prefix test.
+ * Accepts a string or an array of strings, and matches EXACTLY the spellings the
+ * server's annoTypeConditions match — no substring test, no namespace-prefix test.
  *
- * This used to also accept any `*:Annotation` form, on the reasoning that erring
- * wide costs at most a merge the server declined and the counts guard would
- * catch it.  That reasoning is wrong: the guard compares Annotations-Gathered
- * with Annotations-Merged, and a document the server's query never GATHERED
- * appears in neither, so the counts agree and nothing fires.  Verified live —
- * entity 6a90473284b70dde15ace507 carries one `type: "Annotation"` and one
- * `type: "myns:Annotation"`; the server reported 1 gathered / 1 merged and
- * omitted the second, while forEditing merged it and forDisplay did not.  Erring
- * wide is not the safe direction; matching the server is.
  * @param {String|Array<String>} typeValue the document's type or @type.
  * @returns {Boolean}
  */
@@ -118,7 +73,8 @@ export function isAnnotationType(typeValue) {
 }
 
 /**
- * Does this annotation body assert itself whole, as the server's `bodyValue`?
+ * Checks if an annotation body asserts itself whole as the server's `bodyValue`.
+ *
  * @param {Object} body one body of an annotation.
  * @returns {Boolean}
  */
@@ -128,8 +84,7 @@ function isTextualBody(body) {
 
 /**
  * Both read paths must fail the same way on a document that came back empty.
- * Before this existed the display path threw a bare TypeError out of
- * Object.entries while the client path silently resolved to null.
+ *
  * @param {any} doc the fetched document.
  * @param {String} context what was being resolved, for the message.
  * @returns {Object} the document.
@@ -147,28 +102,18 @@ export function requireDocument(doc, context = "This read") {
  * Regularizes assertions to enforce the existence of a `source` key.
  * The return is only the value of the assertion, so the desired key must be
  * applied upstream from the scope of this function.  Survives the heterogeneous
- * arrays `/expanded` produces (raw strings and `{value}` objects mixed), and is
- * idempotent — a value object this module already built is returned unchanged,
- * which is what lets shapeValues run over a partly merged document.
+ * arrays `/expanded` produces, and is idempotent.  Avalue object this module
+ * already built is returned unchanged, which is what lets shapeValues run over 
+ * a partly merged document.
  *
- * Idempotency is by object identity (the SHAPED WeakSet), never by inspecting
- * the value's keys.  `source` and `value` are ordinary vocabulary terms; a body
- * asserting `{citation: {source: "Book A", value: "p. 12"}}` is real data, not a
- * value object, and must keep its citationSource.
  * @param {any} val asserted value of the incoming annotation.
  * @param {Object} fromAnno parent annotation of the asserted value, as a handy metadata container.
  * @returns {Object} with `value`, `source`, and `evidence` keys.
  */
 export function buildValueObject(val, fromAnno = {}) {
     if (val !== null && typeof val === "object" && SHAPED.has(val)) { return val }
-    // An empty string is a value someone chose, not a missing one — a field a
-    // user deliberately cleared.  getValue reports a BARE "" as undefined (0.11
-    // treats it as "no value" and every other consumer of getValue still depends
-    // on that, so normalize is left alone) while reporting a WRAPPED one —
-    // {value: ""} — as "".  Restoring it here settles that disagreement and
-    // keeps the documented contract true: a non-identity value is always a
-    // value object, and a value object always has a `value` key.  Without it a
-    // cleared field shaped to {source, evidence} with no `value` at all.
+    // An empty string is a value someone chose, not a missing one such as a field
+    // a user deliberately cleared.
     const value = (val === "") ? "" : getValue(val)
     const valueObject = {
         source: { citationSource: fromAnno["@id"] ?? fromAnno.id },
@@ -187,14 +132,8 @@ export function buildValueObject(val, fromAnno = {}) {
  * Idempotence here is by object IDENTITY, deliberately — `source` and `value`
  * are ordinary vocabulary terms, so sniffing for them mistakes real data for a
  * value object.  The cost is that identity does not survive a clone, and
- * Entity#assertions hands every subscriber a CLONE.  Without this, the memoized
- * document an element receives as `detail.payload` is unrecognizable as shaped,
- * and anything that shapes it again unwraps and re-wraps each value — output
- * that looks correct and has silently lost every `citationSource`, which is what
- * makes the next form save POST a duplicate assertion instead of updating.
+ * Entity#assertions hands every subscriber a CLONE.
  *
- * Identity keys are skipped: shapeValues passes them through untouched, so they
- * are not value objects and branding them would claim otherwise.
  * @param {Object} shaped a document this module produced, then cloned.
  * @returns {Object} the same document.
  */
@@ -212,6 +151,7 @@ export function markShaped(shaped) {
  * The RERUM `_id` a document is stored under: the last path segment of its URI.
  * That is literally what the server matches on — `GET /v1/id/:_id/expanded`
  * looks the record up by this segment.
+ *
  * @param {Object} doc a raw RERUM document.
  * @returns {String} the storage id, or "" when there is no usable URI.
  */
@@ -224,37 +164,11 @@ function storageId(doc) {
  * Merge annotations oldest assertion first.
  *
  * The reason is chronology, not agreement with the server. A RERUM `_id` is a
- * Mongo ObjectId, whose leading four bytes are a creation timestamp, and
- * `@id` is minted as `RERUM_ID_PREFIX + _id` (crud.js), so the last path
- * segment of an annotation's URI sorts it by when it was asserted. "In the
- * order someone said it" is the only ordering this data actually carries, and
- * a merged property is otherwise a set with an accidental order.
- *
- * Merging in raw `POST /query` order got this measurably wrong, not merely
- * differently: on `5d7ba417e4b07f0c56c0f539`, `doubling` came back
- * `["The second of two", "The first of two"]` — values that name their own
- * order, reversed. Mongo promises no order, and it is worth being precise about
- * what that means here: the unsorted order proved STABLE across repeated reads
- * and across page limits, so this was never flapping between renders. It was
- * consistently arbitrary, which is harder to notice.
- *
- * Cross-path agreement then follows as a consequence rather than a goal.
- * `findLeafAnnotationsFor` (rerum_server_nodejs/controllers/utils.js) sorts its
- * matches by `String(_id)` for a reason of its own — a stable ETag, so a
- * revalidation can answer 304 — and `crud.js` merges that array in order. Both
- * sides independently choose creation order, so the two reads assemble the same
- * document.
- *
- * That independence is the point, and it is why this is NOT written as "keep in
- * step with the server". If `/expanded` ever reorders its gather, DEER's output
- * stays chronological, stable, and self-consistent; only agreement with the
- * server degrades, and it degrades into a visible ordering difference rather
- * than into corrupted values. Do not change this rule to chase the server's.
+ * Mongo ObjectId, whose leading four bytes are a creation timestamp.
  *
  * Sorting the bare storage id rather than the whole URI is deliberate: the
- * server compares bare `_id`s, so on a deployment listing more than one entry
- * in config.ID_BASES a full-URI sort would group by host before it sorted by
- * time.
+ * server compares bare `_id`s.
+ *
  * @param {Array<Object>} annotations annotation documents, unordered.
  * @returns {Array<Object>} a new array, oldest assertion first.
  */
@@ -272,6 +186,7 @@ function inAssertionOrder(annotations) {
  * shape, leaving identity keys alone.  Both read paths end here, so consumers
  * get one rule: a non-identity value is a value object, or an array of value
  * objects.  Values already shaped during the merge pass through unchanged.
+ *
  * @param {Object} obj a resolved or merged entity document.  Not mutated.
  * @returns {Object} the DEER-shaped document.
  */
@@ -300,10 +215,7 @@ export function shapeValues(obj) {
  * Merged values carry `source.citationSource` = the asserting annotation's @id,
  * which is what keeps the create-vs-update trigger working on the editing path.
  * The entity's own values are preserved alongside annotation values, matching
- * the server's `/expanded` merge behavior.
- * Every annotation handed in IS merged: whose annotations to merge is settled
- * by the read (see the module note), so pass the annotations a read returned,
- * never an unfiltered query result.
+ *
  * @param {Object} entity the resolved entity document, RAW — pass the fetched
  * document, never an already-shaped one.
  * @param {Array<Object>} annotations annotation documents targeting the entity,
@@ -312,56 +224,16 @@ export function shapeValues(obj) {
  */
 export function applyAssertions(entity, annotations = []) {
     const assertOn = structuredClone(requireDocument(entity, "applyAssertions"))
-    // A deleted record accepts no assertions.  `idExpanded` gathers none for one
-    // (`const annos = deleted ? [] : …`) and returns the bare tombstone, where
-    // isDeleted is `hasOwnProperty("__deleted")` (utils.js).  Its annotations are
-    // still leaves and still target it, so this path merged them onto the
-    // tombstone while the server reported 0 gathered / 0 merged — counts
-    // agreeing, guard quiet.  Verified live on 6a9047809323863ca20c3785.
+    // A deleted record accepts no assertions.
     if (Object.hasOwn(assertOn, "__deleted")) { return shapeValues(assertOn) }
-    // Oldest assertion first, not the order the query happened to return them
-    // in — see inAssertionOrder.  Sorted here rather than in expand.clientRead
-    // because this is the single funnel both editing consumers reach:
-    // clientMerge, and Entity#assertions re-merging from Entity.Annotations.
-    // That Map is keyed by version chain and preserves INSERTION order, so an
-    // updated annotation would otherwise hold the position its superseded
-    // version had — its edit would sort as though it were the original.
     for (const anno of inAssertionOrder(annotations)) {
-        // An annotation with no id has no citationSource to contribute, and a
-        // value merged without one makes the next form save POST a duplicate
-        // assertion instead of updating.  Entity#attachAnnotation already
-        // refuses these for the same reason, so skipping here is what keeps the
-        // two editing entry points — expand.forEditing and Entity#assertions —
-        // returning the same document.  `@id` or `id`: RERUM negotiates which
-        // one it returns from the document's own @context.
+        // An annotation with no id has no citationSource to contribute 
         const annoId = anno?.["@id"] ?? anno?.id
         if (annoId === undefined || annoId === null) { continue }
-        // A superseded annotation asserts nothing.  RERUM mints a new @id on
-        // update, so a stale version merged beside its replacement would yield
-        // two conflicting values and two citationSources.  The queries filter
-        // to leaves, but Entity.Annotations can outlive a write.  0.11 guarded
-        // this the same way (deer-utils.js:150).
+        // A superseded annotation asserts nothing.
         if (anno?.__rerum?.history?.next?.length) { continue }
-        // A LITERAL MIRROR of the server's assertionsFrom
-        // (rerum_server_nodejs/controllers/crud.js), applied unconditionally
-        // rather than only when a bodyValue is present.
-        //
-        // DEER used to read every key of every body, which is strictly RICHER
-        // than the server -- and that richness is what made the cacheable read
-        // unusable.  The server declines a multi-key body, so merged < gathered,
-        // so forDisplay fell back to this path for the life of the entity.
-        // RERUM is open: one third party annotating your entity with a
-        // Choice/Composite/List body was enough to cost every display read of it
-        // two requests, permanently.  Reading exactly what the server reads makes
-        // the two paths agree, which is what lets forDisplay trust its merge and
-        // serve from cache.
         const hasBodyValue = typeof anno.bodyValue === "string"
         if (hasBodyValue) {
-            // The server emits an assertion for a bare `bodyValue` string.  This
-            // path once read nothing from it at all, and nothing reported the
-            // gap: the server counts such an annotation as merged, so the counts
-            // agreed.  A view showed the value and a form editing the same entity
-            // was blind to it.
             mergeAssertion(assertOn, "bodyValue", buildValueObject(anno.bodyValue, anno))
         }
         // In JSON-LD a one-element Array and the bare value are the same body, so
@@ -373,9 +245,7 @@ export function applyAssertions(entity, annotations = []) {
         // bodyValue assertion above still stands.
         if (Array.isArray(body) || !body || typeof body !== "object") { continue }
         // A TextualBody asserts itself whole under `bodyValue`, the way the
-        // server does.  Reading its keys instead would land the text under
-        // `value`, so the two paths would disagree on the KEY -- and again with
-        // no signal, since the server merges it and the counts match.
+        // server does.
         if (isTextualBody(body)) {
             mergeAssertion(assertOn, "bodyValue", buildValueObject(body, anno))
             continue
@@ -384,45 +254,17 @@ export function applyAssertions(entity, annotations = []) {
         // Any other multi-key body is structural rather than assertional and
         // cannot be attributed to a single entity property.  This is what skips
         // the Choice, Composite, and List multiplicity constructs.
-        //
-        // A body carrying `evidence` ALONGSIDE its assertion lands here too:
-        // that is a two-key body, the server declines it, and so does this.  DEER
-        // writes evidence on the ANNOTATION (deer-record.js:329), which
-        // buildValueObject reads out of `fromAnno`, so DEER's own data is
-        // unaffected.  0.11 hoisted a body's evidence onto the entity itself
-        // (deer-utils.js:141), where the last annotation carrying one silently
-        // won; nothing replaces that, because the server never honored it.
         if (keys.length !== 1) { continue }
         const key = keys[0]
         const val = body[key]
         if (FORBIDDEN_KEYS.has(key)) {
-            // Gated, like the identity-key warning below it.  RERUM is open, so
-            // this is third-party-driven: an ungated warning here lets anyone
-            // annotating your entity fill the console of every page that renders
-            // it.  The assertion is refused either way.
             if (config.DEBUG) { console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts the reserved key '${key}'; ignoring.`) }
             continue
         }
         if (IDENTITY_KEYS.includes(key)) {
-            // Identity belongs to the entity, not to anything asserting about
-            // it.  Merging here would leave a shaped value under a key
-            // shapeValues passes through untouched, so the two read paths would
-            // disagree on it.
             if (config.DEBUG) { console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts identity key '${key}'; ignoring.`) }
             continue
         }
-        // Each member is shaped individually so it carries the annotation that
-        // asserted it, but the ARRAY ITSELF is preserved.  The server assigns the
-        // whole value and lets its shaping pass map over it, so merging member by
-        // member collapsed a one-member array to a scalar: `{a: ["only"]}` came
-        // back `[{value:"only"}]` from the server and `{value:"only"}` from here.
-        //
-        // A null asserted value is MERGED RAW, not skipped, for the same reason:
-        // the server assigns it and lets shapeValues drop it later.  Skipping it
-        // here left an entity's own value a SCALAR where the server produced a
-        // one-element array -- `{deathDate: "1992"}` plus an annotation asserting
-        // `deathDate: null` is `[{value:"1992"}]` from the server.  shapeValues
-        // filters the nulls out of the array either way.
         const shapeOne = (one) => (one === undefined || one === null) ? one : buildValueObject(one, anno)
         mergeAssertion(assertOn, key, Array.isArray(val) ? val.map(shapeOne) : shapeOne(val))
     }
@@ -435,19 +277,7 @@ export function applyAssertions(entity, annotations = []) {
  * the contribution is appended to.  Raw values left here are shaped by the
  * shapeValues pass that follows.
  *
- * A LITERAL PORT of the server's applyExpansionAnnotations
- * (rerum_server_nodejs/controllers/crud.js) — deliberately, key line for key
- * line, because every place this drifted from it produced a cross-path
- * divergence that the merge counts could not report:
- *
- * - Presence is `Object.hasOwn`, not a test of the value.  Reading the value
- *   made an entity carrying `nickname: null` plus an annotation asserting
- *   `nickname` come back `[{value:"Nick"}]` from the server and a bare
- *   `{value:"Nick"}` from here.
- * - `contributed` keeps its arrayness.  Merging an array member by member
- *   collapsed `{a: ["only"]}` to a scalar where the server yields a one-element
- *   array, and dropped `{a: []}` and `{a: [null]}` entirely where the server
- *   yields `[]`.
+ * A port of the server's applyExpansionAnnotations.
  *
  * @param {Object} target the document being merged onto, mutated in place.
  * @param {String} key the property the annotation asserts.
