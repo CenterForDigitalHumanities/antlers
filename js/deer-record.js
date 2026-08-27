@@ -16,20 +16,6 @@ const changeLoader = new MutationObserver(renderChange)
 var DEER = config
 
 /**
- * Parse the JSON body of a RERUM write response.
- * RERUM attaches `new_obj_state`, a self-copy of the response body, to every
- * write response.  It is deprecated and slated for removal, and it is stripped
- * rather than read so it can never round-trip back into a stored document.
- * @param {Response} response from a CREATE, UPDATE or OVERWRITE request
- * @returns {Promise<Object>} the written document itself
- */
-const parseWriteResponse = async response => {
-    const data = await response.json()
-    delete data?.new_obj_state
-    return data
-}
-
-/**
  * Observer callback for rendering newly loaded objects. Checks the
  * mutationsList for "deep-object" attribute changes.
  * @param {Array} mutationsList of MutationRecord objects
@@ -281,10 +267,10 @@ export default class DeerReport {
                 },
                 body: JSON.stringify(record)
             })
-                .then(parseWriteResponse)
+                .then(response => response.json())
                 .then(data => {
-                    UTILS.broadcast(undefined, DEER.EVENTS.CREATED, self.elem, data)
-                    return data
+                    UTILS.broadcast(undefined, DEER.EVENTS.CREATED, self.elem, data.new_obj_state)
+                    return data.new_obj_state
                 })
                 .catch(err => { })
         }
@@ -388,12 +374,12 @@ export default class DeerReport {
                         },
                         body: JSON.stringify(annotation)
                     })
-                        .then(parseWriteResponse)
+                        .then(response => response.json())
                         .then(anno => {
-                            input.setAttribute(DEER.SOURCE, anno["@id"])
-                            if(anno.evidence)input.setAttribute(DEER.EVIDENCE, anno.evidence)
-                            if(anno.motivation)input.setAttribute(DEER.MOTIVATION, anno.motivation)
-                            if(anno.creator)input.setAttribute(DEER.ATTRIBUTION, anno.creator)
+                            input.setAttribute(DEER.SOURCE, anno.new_obj_state["@id"])
+                            if(anno.new_obj_state.evidence)input.setAttribute(DEER.EVIDENCE, anno.new_obj_state.evidence)
+                            if(anno.new_obj_state.motivation)input.setAttribute(DEER.MOTIVATION, anno.new_obj_state.motivation)
+                            if(anno.new_obj_state.creator)input.setAttribute(DEER.ATTRIBUTION, anno.new_obj_state.creator)
                             //TODO handle @context?
                     })
                 })
@@ -490,7 +476,8 @@ export default class DeerReport {
             },
             body: JSON.stringify(record)
         })
-            .then(parseWriteResponse)
+            .then(response => response.json())
+            .then(obj => { return obj.new_obj_state })
     }
 }
 

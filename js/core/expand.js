@@ -58,13 +58,14 @@ import { applyAssertions, isAnnotationType, requireDocument, shapeValues } from 
 const uncountedDeployments = new Set()
 
 /**
- * Entities already reported as forcing the client fallback.  Deduplicated per
- * ENTITY rather than per deployment (the way uncountedDeployments is): the
- * divergence is a property of one entity's annotations, not of the server, so a
- * list of 200 must not print 200 lines — but two different entities diverging
- * are two different things to look at.
+ * Drop the per-deployment warning bookkeeping.  For teardown and tests only —
+ * entity.js clearEntities() calls this, because a Set left populated here
+ * outlives the session it belongs to and silently suppresses a warning the next
+ * one should see.
  */
-const divergentEntities = new Set()
+export function clearWarnings() {
+    uncountedDeployments.clear()
+}
 
 /**
  * Keep only the documents that are actually Annotations.
@@ -72,8 +73,8 @@ const divergentEntities = new Set()
  * annoTypeConditions (rerum_server_nodejs/controllers/utils.js) is an `$or` over
  * `type` and `@type` independently, so a document carrying
  * `{type: "Person", "@type": "Annotation"}` is gathered by the server and would
- * be dropped here by a `??` that stops at the first key present.  The counts
- * cannot report that: the server gathered and merged it, so they agree.
+ * be dropped here by a `??` that stops at the first key present.  Nothing can
+ * report that: the server gathered and merged it, so the counts agree.
  * (assertionsFrom reads a BODY's type with `??`, so isTextualBody keeps that.)
  */
 const onlyAnnotations = (finds) => (Array.isArray(finds) ? finds : [])
@@ -102,10 +103,10 @@ function requireRerumId(uri) {
  * findLeafAnnotationsFor's TARGET_KEYS
  * (rerum_server_nodejs/controllers/utils.js).  KEEP IN STEP WITH THE SERVER: a
  * key the server matches and this list does not is an annotation `/expanded`
- * merges and the client read never sees.  The merge counts agree in that case,
- * so forDisplay's divergence guard cannot notice it — a view shows the value,
- * the form editing the same entity is blind to it, and the next save POSTs a
- * duplicate assertion instead of updating.
+ * merges and the client read never sees.  Nothing can report that — the merge
+ * counts agree, because the server both gathered and merged it — so a view shows
+ * the value, the form editing the same entity is blind to it, and the next save
+ * POSTs a duplicate assertion instead of updating.
  */
 const TARGET_KEYS = ["target", "target.@id", "target.id",
     "target.source", "target.source.@id", "target.source.id"]
@@ -197,7 +198,7 @@ export async function clientRead(id, { fresh = false } = {}) {
     const annotations = onlyAnnotations(list.filter(doc => !isSelf(doc)))
     return {
         entity,
-        annotations: annotations.concat(await slugTargetedAnnotations(entity, annotations))
+        annotations: annotations.concat(await aliasTargetedAnnotations(entity, uri, annotations))
     }
 }
 
@@ -217,37 +218,62 @@ function slugTargetUri(entity) {
 }
 
 /**
- * The annotations targeting this entity by its Slug URI rather than its `@id`.
- *
- * A SECOND round trip, and unavoidable: the server knows both URIs before it
- * queries because it has already loaded the record, while a client cannot build
- * the slug URI until the first read hands it the document.  Paid only by an
- * entity that actually carries a slug — DEER writes through TinyNode, which does
- * not forward the `Slug` header, so nothing DEER creates has one and this costs
- * ordinary reads nothing.
- *
- * Without it the two paths silently disagreed.  Verified live on
- * `5f3af2b0e4b00e5e099908ed` (slug `someguynamedsteve`): an annotation targeting
- * the slug URI merged on the display path and was invisible to the editing one,
- * at 2 gathered / 2 merged — the server counts it, so the guard cannot see the
- * difference.
+ * Every URI this record answers to: its own `@id` and, when it has one, its
+ * RERUM Slug URI.  `idExpanded` resolves the record with
+ * `{$or: [{_id}, {__rerum.slug}]}` and then gathers annotations targeting BOTH
+ * (`findLeafAnnotationsFor([targetId, slugTargetId], …)`), so a client read that
+ * covers only the URI it happened to be ASKED for comes back short.
  * @param {Object} entity the raw entity document.
+ * @returns {Array<String>} the URIs, in no particular order.
+ */
+function recordUris(entity) {
+    const own = entity?.["@id"] ?? entity?.id
+    return [own, slugTargetUri(entity)].filter(u => typeof u === "string" && u.length > 0)
+}
+
+/**
+ * The annotations targeting a URI this record answers to that the FIRST query
+ * did not cover.
+ *
+ * A SECOND round trip, and unavoidable: the server knows every URI before it
+ * queries because it has already loaded the record, while a client cannot learn
+ * the others until the first read hands it the document.
+ *
+ * BOTH directions matter, and only one of them used to be handled:
+ *
+ *  - Asked by `@id`, record has a slug -> annotations targeting the SLUG URI
+ *    were invisible.  Verified live on `5f3af2b0e4b00e5e099908ed` (slug
+ *    `someguynamedsteve`): one merged on the display path and not the editing
+ *    one, at 2 gathered / 2 merged, so no count could report it.
+ *  - Asked by the SLUG URI -> annotations targeting the record's own `@id` were
+ *    invisible.  Same record read as `…/id/someguynamedsteve` came back without
+ *    `targetCollection`, which both the server and a read by `@id` carry.  This
+ *    stayed hidden while `Entity#set data` re-resolved on the id change the
+ *    recovery GET produced: that redundant second read was addressed by `@id`
+ *    and quietly supplied what the first one missed.  Removing it (the fix for
+ *    the double `complete`) is what surfaced this.
+ *
+ * Costs nothing for a record with no slug, which is everything DEER creates --
+ * DEER writes through TinyNode, which does not forward the `Slug` header.
+ * @param {Object} entity the raw entity document.
+ * @param {String} requestedUri the URI clientRead was called with, already covered.
  * @param {Array<Object>} found the annotations the first query already returned.
  * @returns {Promise<Array<Object>>} the additional annotations, deduplicated.
  */
-async function slugTargetedAnnotations(entity, found) {
-    const slugUri = slugTargetUri(entity)
-    if (slugUri === undefined) { return [] }
+async function aliasTargetedAnnotations(entity, requestedUri, found) {
+    const requested = rerum.canonicalId(requestedUri)
+    const aliases = recordUris(entity).filter(u => rerum.canonicalId(u) !== requested)
+    if (aliases.length === 0) { return [] }
     const finds = await rerum.query({
         "$and": [
-            { "$or": targetingClauses(slugUri) },
+            { "$or": aliases.flatMap(targetingClauses) },
             { "__rerum.generatedBy": rerum.generatedBy() }
         ],
         "__rerum.history.next": { "$exists": true, "$size": 0 }
     })
     const list = Array.isArray(finds) ? finds : []
     if (list.length >= config.LIMIT) {
-        console.warn(`${slugUri}: slug-targeting query returned a full page (limit ${config.LIMIT}). Annotations beyond the limit are not merged and their provenance is lost — a form prefilled from this read may create duplicate assertions.`)
+        console.warn(`${aliases.join(", ")}: alias-targeting query returned a full page (limit ${config.LIMIT}). Annotations beyond the limit are not merged and their provenance is lost — a form prefilled from this read may create duplicate assertions.`)
     }
     // An annotation can name the entity by BOTH URIs, and the entity itself can
     // come back here when the slug resolves to it, so dedupe on what the first
@@ -274,7 +300,11 @@ async function slugTargetedAnnotations(entity, found) {
 export async function forDisplay(id, { fresh = false } = {}) {
     const uri = rerum.idOf(id)
     requireRerumId(uri)
-    // ONE cacheable GET.  The server's PROTECTED_EXPANSION_KEYS now covers
+    // ONE cacheable GET, and it STAYS one: the only fallback left is a
+    // deployment that sends no merge-count headers at all.  A count mismatch is
+    // expected and benign now that applyAssertions reads exactly what the server
+    // reads.
+    // The server's PROTECTED_EXPANSION_KEYS now covers
     // every key in IDENTITY_KEYS, so an Annotation can no longer append to the
     // entity's `type`/`@type` and the merge is authoritative for identity as it
     // stands.  Before that (rerum_server_nodejs, Aug 2026) this path had to
@@ -297,23 +327,20 @@ export async function forDisplay(id, { fresh = false } = {}) {
         // round trip, on top of the `/expanded` GET already wasted getting here.
         return clientMerge(uri, { fresh })
     }
-    if (gathered !== merged) {
-        // The server merges a body only when it is an object with exactly one
-        // key; multi-key bodies, array bodies, and bodies asserting a protected
-        // key are gathered and then dropped.  Whatever it declined is absent
-        // from this document and unrecoverable from it, so re-read the client
-        // way and let the two paths agree.  DEER writes one key per annotation
-        // and never asserts a protected key, so its own data never trips this.
-        // Ungated, like the missing-headers branch above and for the same
-        // reason: the consequence is identical — two requests per display read
-        // and no cacheable path, which is the whole reason forDisplay exists.
-        // Gating it behind DEBUG let a deployment lose that path on a subset of
-        // its entities with nothing printed at all.
-        if (!divergentEntities.has(uri)) {
-            divergentEntities.add(uri)
-            console.warn(`${uri}: server merged ${merged} of ${gathered} annotations, so the cacheable read cannot be trusted for this entity and every display read of it now costs two requests. Falling back to the client read path so no asserted property is silently dropped.`)
-        }
-        return clientMerge(uri, { fresh })
+    if (gathered !== merged && config.DEBUG) {
+        // NOT a divergence, and no longer a reason to fall back.  The server
+        // merges a body only when it is an object with exactly one key, and
+        // assertions.applyAssertions now mirrors that rule exactly, so an
+        // annotation the server declined is one the client path would decline
+        // too.  Both reads produce the same document; the counts differing just
+        // says some gathered annotation asserted nothing either path will use.
+        //
+        // This used to force clientMerge, which cost every display read of the
+        // entity two requests FOR THE LIFE OF THE PAGE and disabled the cacheable
+        // path -- the whole reason forDisplay exists.  RERUM is open, so a single
+        // third-party Choice/Composite/List body on your entity was enough to do
+        // it.  Informational only now.
+        console.debug(`${uri}: server merged ${merged} of ${gathered} annotations. The rest assert nothing DEER reads (multi-key, multi-body, or protected-key bodies); the client path declines them identically.`)
     }
     return shapeValues(requireDocument(document, `The expanded read of ${uri}`))
 }

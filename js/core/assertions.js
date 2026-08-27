@@ -313,101 +313,85 @@ export function applyAssertions(entity, annotations = []) {
         // to leaves, but Entity.Annotations can outlive a write.  0.11 guarded
         // this the same way (deer-utils.js:150).
         if (anno?.__rerum?.history?.next?.length) { continue }
-        // The server emits an assertion for a bare `bodyValue` string, which
-        // this path read nothing from at all.  Nothing reported the gap either:
-        // the server counts such an annotation as merged, so gathered === merged
-        // and forDisplay's divergence guard never fired.  A view showed the
-        // value and a form editing the same entity was blind to it.
+        // A LITERAL MIRROR of the server's assertionsFrom
+        // (rerum_server_nodejs/controllers/crud.js), applied unconditionally
+        // rather than only when a bodyValue is present.
         //
+        // DEER used to read every key of every body, which is strictly RICHER
+        // than the server -- and that richness is what made the cacheable read
+        // unusable.  The server declines a multi-key body, so merged < gathered,
+        // so forDisplay fell back to this path for the life of the entity.
+        // RERUM is open: one third party annotating your entity with a
+        // Choice/Composite/List body was enough to cost every display read of it
+        // two requests, permanently.  Reading exactly what the server reads makes
+        // the two paths agree, which is what lets forDisplay trust its merge and
+        // serve from cache.
         const hasBodyValue = typeof anno.bodyValue === "string"
         if (hasBodyValue) {
+            // The server emits an assertion for a bare `bodyValue` string.  This
+            // path once read nothing from it at all, and nothing reported the
+            // gap: the server counts such an annotation as merged, so the counts
+            // agreed.  A view showed the value and a form editing the same entity
+            // was blind to it.
             mergeAssertion(assertOn, "bodyValue", buildValueObject(anno.bodyValue, anno))
         }
-        let bodies = anno.body ?? []
-        if (!Array.isArray(bodies)) { bodies = [bodies] }
-        // Only object bodies assert anything: an empty array and a bare IRI
-        // string are both a `body` that says nothing, which is also why the
-        // server stops at `typeof body !== "object"`.
-        bodies = bodies.flat(2).filter(body => body && typeof body === "object")
-        if (hasBodyValue) {
-            // W3C forbids an Annotation carrying both `body` and `bodyValue`,
-            // and DEER never writes one — but when a foreign document does, the
-            // server's reading is the one `/expanded` published, so match it
-            // EXACTLY: assertionsFrom (rerum_server_nodejs/controllers/crud.js)
-            // pushes the bodyValue assertion, unwraps a single-element array
-            // body, and then reads that body only if it is a TextualBody or
-            // carries exactly one key — dropping it otherwise.
-            //
-            // This is the one divergence the merge counts cannot report: the
-            // bodyValue assertion by itself already makes the annotation count
-            // as merged, so gathered === merged whatever happens to the body,
-            // and forDisplay's guard never fires.  Verified live on
-            // 6a904487f02a6baab15415b0 — the server merged `bodyValue` twice
-            // plus a single-key body's `singleKey`, and dropped a multi-key
-            // body's two keys, all at 2 gathered / 2 merged.
-            //
-            // WITHOUT a bodyValue, DEER stays deliberately richer than the
-            // server: it reads every key of a multi-key body.  That does not
-            // diverge, because the server declining such a body makes
-            // merged < gathered, and the guard routes forDisplay to this same
-            // client path.
-            const only = bodies[0]
-            bodies = (bodies.length === 1 && (isTextualBody(only) || Object.keys(only).length === 1))
-                ? bodies
-                : []
+        // In JSON-LD a one-element Array and the bare value are the same body, so
+        // unwrap it before counting bodies.  What follows is about how many
+        // bodies the Annotation carries, not how they were serialized.
+        const body = (Array.isArray(anno.body) && anno.body.length === 1) ? anno.body[0] : anno.body
+        // Multiple bodies, no body, and a bare IRI string body referencing an
+        // external resource all assert nothing the server would merge.  Any
+        // bodyValue assertion above still stands.
+        if (Array.isArray(body) || !body || typeof body !== "object") { continue }
+        // A TextualBody asserts itself whole under `bodyValue`, the way the
+        // server does.  Reading its keys instead would land the text under
+        // `value`, so the two paths would disagree on the KEY -- and again with
+        // no signal, since the server merges it and the counts match.
+        if (isTextualBody(body)) {
+            mergeAssertion(assertOn, "bodyValue", buildValueObject(body, anno))
+            continue
         }
-        for (const body of bodies) {
-            // 0.11 hoisted body.evidence onto the entity itself
-            // (deer-utils.js:141), where the last annotation carrying one
-            // silently won.  Attach it to the values this body asserts
-            // instead — that is what buildValueObject's evidence slot is for.
-            //
-            // Only when the body asserts something for it to qualify.  A body
-            // that is NOTHING BUT evidence has no such value, so reading it as
-            // metadata dropped the annotation entirely while the server merged
-            // it as an ordinary one-key assertion and counted it — the two paths
-            // returned different KEY SETS with gathered === merged, so the
-            // divergence guard stayed quiet.  One key means it is the assertion.
-            const evidenceIsMetadata = Object.keys(body).length > 1
-            const evidence = evidenceIsMetadata ? (body.evidence?.["@id"] ?? body.evidence) : undefined
-            const from = (evidence === undefined) ? anno : { ...anno, evidence }
-            // A TextualBody asserts itself whole under `bodyValue`, the way the
-            // server does.  Reading its keys instead would land the text under
-            // `value`, so the two paths would disagree on the KEY — and again
-            // with no signal, since the server merges it and the counts match.
-            if (isTextualBody(body)) {
-                mergeAssertion(assertOn, "bodyValue", buildValueObject(body, from))
-                continue
-            }
-            for (const [key, val] of Object.entries(body)) {
-                if (key === "evidence" && evidenceIsMetadata) { continue }
-                if (val === undefined || val === null) { continue }
-                if (FORBIDDEN_KEYS.has(key)) {
-                    console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts the reserved key '${key}'; ignoring.`)
-                    continue
-                }
-                if (IDENTITY_KEYS.includes(key)) {
-                    // Identity belongs to the entity, not to anything asserting
-                    // about it.  Merging here would leave a shaped value under a
-                    // key shapeValues passes through untouched, so the two read
-                    // paths would disagree on it.
-                    if (config.DEBUG) { console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts identity key '${key}'; ignoring.`) }
-                    continue
-                }
-                // Each member is shaped individually so it carries the annotation
-                // that asserted it, but the ARRAY ITSELF is preserved.  The
-                // server assigns the whole value and lets its shaping pass map
-                // over it, so merging member by member collapsed a one-member
-                // array to a scalar: `{a: ["only"]}` came back `[{value:"only"}]`
-                // from the server and `{value:"only"}` from here, with the merge
-                // counts agreeing so nothing reported it.  null members are left
-                // raw for shapeValues to drop, which is also what the server does
-                // — it never filters at merge time.
-                mergeAssertion(assertOn, key, Array.isArray(val)
-                    ? val.map(one => (one === undefined || one === null) ? one : buildValueObject(one, from))
-                    : buildValueObject(val, from))
-            }
+        const keys = Object.keys(body)
+        // Any other multi-key body is structural rather than assertional and
+        // cannot be attributed to a single entity property.  This is what skips
+        // the Choice, Composite, and List multiplicity constructs.
+        //
+        // A body carrying `evidence` ALONGSIDE its assertion lands here too:
+        // that is a two-key body, the server declines it, and so does this.  DEER
+        // writes evidence on the ANNOTATION (deer-record.js:329), which
+        // buildValueObject reads out of `fromAnno`, so DEER's own data is
+        // unaffected.  0.11 hoisted a body's evidence onto the entity itself
+        // (deer-utils.js:141), where the last annotation carrying one silently
+        // won; nothing replaces that, because the server never honored it.
+        if (keys.length !== 1) { continue }
+        const key = keys[0]
+        const val = body[key]
+        if (FORBIDDEN_KEYS.has(key)) {
+            console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts the reserved key '${key}'; ignoring.`)
+            continue
         }
+        if (IDENTITY_KEYS.includes(key)) {
+            // Identity belongs to the entity, not to anything asserting about
+            // it.  Merging here would leave a shaped value under a key
+            // shapeValues passes through untouched, so the two read paths would
+            // disagree on it.
+            if (config.DEBUG) { console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts identity key '${key}'; ignoring.`) }
+            continue
+        }
+        // Each member is shaped individually so it carries the annotation that
+        // asserted it, but the ARRAY ITSELF is preserved.  The server assigns the
+        // whole value and lets its shaping pass map over it, so merging member by
+        // member collapsed a one-member array to a scalar: `{a: ["only"]}` came
+        // back `[{value:"only"}]` from the server and `{value:"only"}` from here.
+        //
+        // A null asserted value is MERGED RAW, not skipped, for the same reason:
+        // the server assigns it and lets shapeValues drop it later.  Skipping it
+        // here left an entity's own value a SCALAR where the server produced a
+        // one-element array -- `{deathDate: "1992"}` plus an annotation asserting
+        // `deathDate: null` is `[{value:"1992"}]` from the server.  shapeValues
+        // filters the nulls out of the array either way.
+        const shapeOne = (one) => (one === undefined || one === null) ? one : buildValueObject(one, anno)
+        mergeAssertion(assertOn, key, Array.isArray(val) ? val.map(shapeOne) : shapeOne(val))
     }
     return shapeValues(assertOn)
 }

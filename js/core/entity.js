@@ -226,8 +226,11 @@ function clearEntities() {
     editingIds.clear()
     // The write-invalidation bookkeeping lives in rerum.js and would otherwise
     // outlive this teardown, leaving a forced reload pending for the next
-    // session's first read.
+    // session's first read.  expand.js keeps its own per-deployment warning log
+    // for the same lifetime, and a Set left populated there silently suppresses
+    // a warning the next session should see.
     rerum.clearStale()
+    expand.clearWarnings()
 }
 
 /**
@@ -256,6 +259,10 @@ class Entity extends EventTarget {
     // True only while an editing resolution is between writing the raw entity
     // and merging its annotations.  See `set data`.
     #merging = false
+    // True only while a resolution is writing its own result into _data, which
+    // is what tells `set data` an id change came from the read rather than from
+    // a consumer reassigning the document.  See `set data`.
+    #applying = false
 
     /**
      * @param {Object|String} entity object to be described (usually from a JSON-LD
@@ -332,8 +339,26 @@ class Entity extends EventTarget {
         // which is what makes the next form save POST a duplicate assertion.
         // There is no correct answer to give in that window, so give none.
         // assertionsForEditing() awaits the upgrade and never sees this.
-        if (!this.#settled && this.#dataStrategy !== undefined && this.#dataStrategy !== this.#strategy) {
-            throw new Error(`${this.#id}: assertions are not available while the ${this.#dataStrategy} read is being upgraded to ${this.#strategy}. Await assertionsForEditing(), or render on the 'update'/'complete' events.`)
+        // Settled-ness is NOT part of this test.  #fail() sets #settled, so
+        // gating on `!this.#settled` switched the guard off in exactly the case
+        // it is most needed: an editing upgrade that FAILED leaves _data holding
+        // the display document with #strategy already flipped, and the merge
+        // below then runs over an already-shaped document.  structuredClone
+        // breaks the SHAPED identity, so every value object is unwrapped and
+        // re-wrapped -- the output looks correct and has silently lost every
+        // citationSource, which is what makes the next form save POST a
+        // duplicate assertion.  The only question that matters is whether _data
+        // came from the strategy about to be applied to it.
+        //
+        // Safe on every success path: #resolveURI assigns #dataStrategy BEFORE
+        // it assigns _data, on both branches, so a resolved Entity always has
+        // the two in agreement.  It is undefined for the constructor's stub,
+        // which belongs to neither path.
+        if (this.#dataStrategy !== undefined && this.#dataStrategy !== this.#strategy) {
+            const why = (this.#error === undefined)
+                ? `the ${this.#dataStrategy} read is being upgraded to ${this.#strategy}`
+                : `the upgrade from the ${this.#dataStrategy} read to ${this.#strategy} failed (${this.#error.message})`
+            throw new Error(`${this.#id}: assertions are not available -- ${why}. Await assertionsForEditing(), or render on the 'update'/'complete' events.`)
         }
         if (this.#assertions === undefined) {
             // The display read comes back already shaped by expand.forDisplay
@@ -437,11 +462,24 @@ class Entity extends EventTarget {
             this.resolve()
             return
         }
-        if (!sameId(oldId, this.#id)) {
-            // The id moved under us: re-resolve under the new URI and tell
-            // subscribers to repaint — but only if that resolution produced
-            // something.  A failed resolve leaves the stub behind, and painting
-            // it over good data is worse than not repainting at all.
+        if (!sameId(oldId, this.#id) && !this.#applying) {
+            // Not while a resolution is applying its own result.  A record with
+            // a RERUM Slug answers to two URIs, so a read addressed by the slug
+            // comes back carrying the record's own `@id` and lands here -- but
+            // the document that read returned IS the record, so re-resolving
+            // fetches what is already in hand.  Measured on `someguynamedsteve`
+            // before this guard: 5 requests instead of 2, `complete` announced
+            // twice, and the Entity settled on the first read while the second
+            // was still in flight.  The slug alias registered above is what
+            // later consumers arrive through.
+            //
+            // The branch still stands for its real case: a CONSUMER assigning a
+            // document with a different id.
+            //
+            // Re-resolve under the new URI and tell subscribers to repaint — but
+            // only if that resolution produced something.  A failed resolve
+            // leaves the stub behind, and painting it over good data is worse
+            // than not repainting at all.
             // The shaped document, matching what `update` carries.  subscribe()
             // hands every lifecycle event to one handler, so a payload that is
             // sometimes an Entity and sometimes a document means any consumer
@@ -517,6 +555,16 @@ class Entity extends EventTarget {
      */
     attachAnnotation(annotation) {
         if (annotation.id === undefined || annotation.id === null) { return false }
+        // A display Entity's assertions come pre-merged from the server, so the
+        // `assertions` getter never reads this Map.  Holding an annotation here
+        // would leave `Annotations` -- a PUBLIC property -- meaning one thing on
+        // an editing Entity and an arbitrary subset of multi-target annotations
+        // on a display one, while invalidating a memo whose recomputation is
+        // byte-identical.  Refusing completes the intent already stated at
+        // Annotation#registerTargets: holding Annotation objects only matters to
+        // the editing path.  An upgrade rebuilds the Map from its own read, so
+        // nothing is lost by declining now.
+        if (this.#strategy === "display") { return false }
         this.Annotations.set(versionRootId(annotation), annotation)
         this.#assertions = undefined
         return true
@@ -633,7 +681,12 @@ class Entity extends EventTarget {
                 if (generation !== this.#generation) { return }
                 // Before `set data`, which reads `assertions` to announce with.
                 this.#dataStrategy = strategy
-                this.data = resolved
+                this.#applying = true
+                try { this.data = resolved } finally { this.#applying = false }
+                // `set data` announces `update`, and a subscriber may start a
+                // new resolution from that handler.  Settling on this one would
+                // then announce a `complete` the newer read announces again.
+                if (generation !== this.#generation) { return }
                 this.#settled = true
                 this.#announce("complete")
                 return
@@ -652,11 +705,17 @@ class Entity extends EventTarget {
             // because a throw out of `set data` must not leave the flag set and
             // silence every later announcement on this Entity.
             this.#merging = true
+            this.#applying = true
             try {
                 this.data = entity
             } finally {
                 this.#merging = false
+                this.#applying = false
             }
+            // Committing a resolution that has been retired settles the Entity
+            // on a read already superseded and announces a `complete` the newer
+            // read will announce again.
+            if (generation !== this.#generation) { return }
             this.#findAssertions(annotations)
         } catch (err) {
             if (generation !== this.#generation) { return }
