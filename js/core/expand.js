@@ -66,9 +66,18 @@ const uncountedDeployments = new Set()
  */
 const divergentEntities = new Set()
 
-/** Keep only the documents that are actually Annotations. */
+/**
+ * Keep only the documents that are actually Annotations.
+ * BOTH type keys are offered, not `type ?? "@type"`: the server's
+ * annoTypeConditions (rerum_server_nodejs/controllers/utils.js) is an `$or` over
+ * `type` and `@type` independently, so a document carrying
+ * `{type: "Person", "@type": "Annotation"}` is gathered by the server and would
+ * be dropped here by a `??` that stops at the first key present.  The counts
+ * cannot report that: the server gathered and merged it, so they agree.
+ * (assertionsFrom reads a BODY's type with `??`, so isTextualBody keeps that.)
+ */
 const onlyAnnotations = (finds) => (Array.isArray(finds) ? finds : [])
-    .filter(doc => doc && isAnnotationType(doc.type ?? doc["@type"]))
+    .filter(doc => doc && isAnnotationType([doc.type, doc["@type"]]))
 
 
 /**
@@ -185,10 +194,67 @@ export async function clientRead(id, { fresh = false } = {}) {
     // the entity in its own query result and pay for a needless GET.
     const isSelf = (doc) => rerum.canonicalId(doc?.["@id"] ?? doc?.id) === rerum.canonicalId(uri)
     const entity = requireDocument(list.find(isSelf) ?? await rerum.resolve(uri, { fresh }), `The read of ${uri}`)
+    const annotations = onlyAnnotations(list.filter(doc => !isSelf(doc)))
     return {
         entity,
-        annotations: onlyAnnotations(list.filter(doc => !isSelf(doc)))
+        annotations: annotations.concat(await slugTargetedAnnotations(entity, annotations))
     }
+}
+
+/**
+ * The URI an entity also answers to through its RERUM Slug, built the way
+ * `idExpanded` builds `slugTargetId` — the entity's own URI up to its last
+ * slash, plus the slug.
+ * @param {Object} entity the raw entity document.
+ * @returns {String|undefined} the slug URI, or undefined when there is no slug.
+ */
+function slugTargetUri(entity) {
+    const slug = entity?.__rerum?.slug
+    if (typeof slug !== "string" || slug.length === 0) { return undefined }
+    const own = entity["@id"] ?? entity.id
+    const lastSlash = (typeof own === "string") ? own.lastIndexOf("/") : -1
+    return (lastSlash === -1) ? undefined : own.slice(0, lastSlash + 1) + slug
+}
+
+/**
+ * The annotations targeting this entity by its Slug URI rather than its `@id`.
+ *
+ * A SECOND round trip, and unavoidable: the server knows both URIs before it
+ * queries because it has already loaded the record, while a client cannot build
+ * the slug URI until the first read hands it the document.  Paid only by an
+ * entity that actually carries a slug — DEER writes through TinyNode, which does
+ * not forward the `Slug` header, so nothing DEER creates has one and this costs
+ * ordinary reads nothing.
+ *
+ * Without it the two paths silently disagreed.  Verified live on
+ * `5f3af2b0e4b00e5e099908ed` (slug `someguynamedsteve`): an annotation targeting
+ * the slug URI merged on the display path and was invisible to the editing one,
+ * at 2 gathered / 2 merged — the server counts it, so the guard cannot see the
+ * difference.
+ * @param {Object} entity the raw entity document.
+ * @param {Array<Object>} found the annotations the first query already returned.
+ * @returns {Promise<Array<Object>>} the additional annotations, deduplicated.
+ */
+async function slugTargetedAnnotations(entity, found) {
+    const slugUri = slugTargetUri(entity)
+    if (slugUri === undefined) { return [] }
+    const finds = await rerum.query({
+        "$and": [
+            { "$or": targetingClauses(slugUri) },
+            { "__rerum.generatedBy": rerum.generatedBy() }
+        ],
+        "__rerum.history.next": { "$exists": true, "$size": 0 }
+    })
+    const list = Array.isArray(finds) ? finds : []
+    if (list.length >= config.LIMIT) {
+        console.warn(`${slugUri}: slug-targeting query returned a full page (limit ${config.LIMIT}). Annotations beyond the limit are not merged and their provenance is lost — a form prefilled from this read may create duplicate assertions.`)
+    }
+    // An annotation can name the entity by BOTH URIs, and the entity itself can
+    // come back here when the slug resolves to it, so dedupe on what the first
+    // query already produced rather than trusting the two result sets to be
+    // disjoint.
+    const seen = new Set([...found, entity].map(doc => rerum.canonicalId(doc?.["@id"] ?? doc?.id)))
+    return onlyAnnotations(list).filter(doc => !seen.has(rerum.canonicalId(doc["@id"] ?? doc.id)))
 }
 
 /**

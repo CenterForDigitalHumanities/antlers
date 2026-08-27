@@ -24,33 +24,37 @@ const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8" }
 const fetcher = (...args) => (config.fetch ?? globalThis.fetch)(...args)
 
 /**
- * URIs invalidated by a write, mapped to the request URLs already refreshed for
- * them.  One id can be read through several URLs (the document itself and its
- * `/expanded` merge are separate cache entries), so each gets its own forced
- * reload rather than the first read consuming the invalidation for all of them.
+ * URIs invalidated by a write: canonical URI -> `{expires, refreshed}`, where
+ * `refreshed` holds the request URLs already reloaded for that URI.  One id is
+ * read through several URLs (the document itself and its `/expanded` merge are
+ * separate cache entries), so each gets its own forced reload rather than the
+ * first read consuming the invalidation for all of them.
+ *
+ * An entry expires on a TIMESTAMP.  It used to be spent by counting read forms,
+ * which was wrong three ways at once.  The count assumed exactly two forms per
+ * id, true only while the generator stays fixed at config.GENERATOR.  It was
+ * almost never reached: an Annotation's own @id is never read back through this
+ * module, a display-only app never issues the plain GET, and a forms-only app
+ * reads through `POST /query`, which does not consult this at all — so entries
+ * survived until eviction. And eviction dropped them in FIRST-SEEN order, which
+ * `Map.set` preserves for an existing key, so re-invalidating an entity never
+ * moved it back and the entity written most often was the first to lose its
+ * invalidation — the exact opposite of what the eviction is for.
  */
 const staleIds = new Map()
 
 /**
- * How many distinct request URLs one invalidated URI is read through: the
- * document itself, and its `/expanded` merge.  Once both have been refreshed
- * the invalidation is spent and the entry is dropped.
- *
- * INVARIANT: exactly two, and that holds only because the generator is fixed at
- * config.GENERATOR with no per-call override (see requireGenerator).  A second
- * generator would mint a third `/expanded` URL, the count would be spent before
- * that one revalidated, and the first read after a write would be served from a
- * stale cache entry.  If the generator ever becomes per-call, this constant is
- * wrong and the bookkeeping has to expire on a timestamp instead of a count.
+ * How long a write's invalidation is honored.  Derived, not tuned: a cached read
+ * can only serve a pre-write body while the browser still considers it fresh,
+ * and RERUM sends `Cache-Control: max-age=86400, must-revalidate` on both
+ * `GET /v1/id/:_id` and its `/expanded` merge.  That is the window.
  */
-const STALE_URL_FORMS = 2
+const STALE_TTL_MS = 86_400_000
 
 /**
- * Backstop for a session that only ever reads one URL form per id, so its
- * invalidations are never fully spent.  Most sessions are that session: a
- * forms-only app never issues the `/expanded` read, and since forDisplay
- * stopped fetching the entity document alongside the merge, a display-only app
- * never issues the plain GET.  Oldest entries are evicted past this many.
+ * Backstop for a session that writes more distinct URIs within one TTL than it
+ * reads back.  Every entry shares one TTL, so insertion order IS expiry order
+ * and the soonest-expiring entry goes first.
  */
 const STALE_LIMIT = 500
 
@@ -185,14 +189,32 @@ function absoluteUrl(url) {
  * real invalidation.
  */
 function markStale(...ids) {
+    const expires = Date.now() + STALE_TTL_MS
     for (const id of ids.flat(3)) {
         const uri = (typeof id === "string") ? id : (id?.["@id"] ?? id?.id)
         if (typeof uri !== "string" || uri.length === 0) { continue }
         if (!isRerumId(uri)) { continue }
-        staleIds.set(canonicalId(uri), new Set())
-        // Map preserves insertion order, so the first key is the oldest.
-        if (staleIds.size > STALE_LIMIT) { staleIds.delete(staleIds.keys().next().value) }
+        const key = canonicalId(uri)
+        // Deleted before set: `Map.set` on an existing key updates the value but
+        // KEEPS the key's original position.  Re-invalidating has to move it to
+        // the back, or insertion order stops matching expiry order and the sweep
+        // below evicts the most-written entity first.
+        staleIds.delete(key)
+        staleIds.set(key, { expires, refreshed: new Set() })
     }
+    sweepStale()
+}
+
+/** Drop invalidations that have outlived any cache entry they could apply to. */
+function sweepStale() {
+    const now = Date.now()
+    for (const [key, entry] of staleIds) {
+        // One shared TTL means insertion order is expiry order, so the first
+        // entry still in date ends the sweep.
+        if (entry.expires > now) { break }
+        staleIds.delete(key)
+    }
+    while (staleIds.size > STALE_LIMIT) { staleIds.delete(staleIds.keys().next().value) }
 }
 
 /**
@@ -202,13 +224,14 @@ function markStale(...ids) {
  */
 function needsReload(uri, url) {
     const key = canonicalId(uri)
-    const refreshed = staleIds.get(key)
-    if (refreshed === undefined || refreshed.has(url)) { return false }
-    refreshed.add(url)
-    // Every read shape for this URI has now revalidated, so the invalidation is
-    // spent.  Holding the entry any longer only grows the Map for the life of
-    // the session.
-    if (refreshed.size >= STALE_URL_FORMS) { staleIds.delete(key) }
+    const entry = staleIds.get(key)
+    if (entry === undefined) { return false }
+    if (entry.expires <= Date.now()) {
+        staleIds.delete(key)
+        return false
+    }
+    if (entry.refreshed.has(url)) { return false }
+    entry.refreshed.add(url)
     return true
 }
 

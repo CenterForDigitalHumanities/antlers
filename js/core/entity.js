@@ -48,6 +48,21 @@ const editingIds = new Set()
 /** The EntityMap key for an id string or a document carrying one. */
 const keyOf = (id) => rerum.canonicalId((typeof id === "string") ? id : id?.["@id"] ?? id?.id)
 
+/**
+ * The second EntityMap key a record with a RERUM Slug answers to, built the way
+ * the server builds `slugTargetId` (crud.js idExpanded): the record's own URI up
+ * to its last slash, plus the slug.
+ * @param {Object} doc a resolved entity document.
+ * @returns {String|undefined} the canonical slug URI, or undefined without one.
+ */
+function slugAliasOf(doc) {
+    const slug = doc?.__rerum?.slug
+    if (typeof slug !== "string" || slug.length === 0) { return undefined }
+    const own = doc["@id"] ?? doc.id
+    const lastSlash = (typeof own === "string") ? own.lastIndexOf("/") : -1
+    return (lastSlash === -1) ? undefined : rerum.canonicalId(own.slice(0, lastSlash + 1) + slug)
+}
+
 /** The events an Entity announces over its lifetime. */
 const LIFECYCLE = ["update", "reload", "complete", "error"]
 
@@ -224,6 +239,13 @@ function clearEntities() {
  */
 class Entity extends EventTarget {
     #strategy
+    // Which read path produced the document currently in _data, as opposed to
+    // #strategy, which is the path this Entity is HEADING for.  They differ from
+    // the moment upgradeToEditing() flips the strategy until that read lands,
+    // and `assertions` has no correct answer to give in between.  undefined
+    // until the first resolution applies — the constructor's stub belongs to
+    // neither path.
+    #dataStrategy
     #id
     #assertions
     #settled = false
@@ -302,6 +324,17 @@ class Entity extends EventTarget {
      * Invalidated by anything that changes the document or its annotations.
      */
     get assertions() {
+        // upgradeToEditing() flips #strategy before its read lands, so there is
+        // a window where _data is still the SHAPED display document and the
+        // editing branch below would merge over it.  structuredClone breaks the
+        // SHAPED identity, so every value object gets unwrapped and re-wrapped:
+        // the output looks right and has silently lost every citationSource,
+        // which is what makes the next form save POST a duplicate assertion.
+        // There is no correct answer to give in that window, so give none.
+        // assertionsForEditing() awaits the upgrade and never sees this.
+        if (!this.#settled && this.#dataStrategy !== undefined && this.#dataStrategy !== this.#strategy) {
+            throw new Error(`${this.#id}: assertions are not available while the ${this.#dataStrategy} read is being upgraded to ${this.#strategy}. Await assertionsForEditing(), or render on the 'update'/'complete' events.`)
+        }
         if (this.#assertions === undefined) {
             // The display read comes back already shaped by expand.forDisplay
             // and has no annotations to merge; only the editing read does.
@@ -317,9 +350,18 @@ class Entity extends EventTarget {
             // memo, which exists because recomputing means a structuredClone and
             // a full merge on every read.  Freezing keeps one object and turns
             // the corruption into a throw.
-            this.#assertions = deepFreeze((this.#strategy === "display")
-                ? structuredClone(this._data)
-                : applyAssertions(this._data, [...this.Annotations.values()].map(a => a.data)))
+            //
+            // Cloned OUTSIDE the branch so the memo owns every object it
+            // freezes.  applyAssertions clones the entity but not the
+            // annotations, and buildValueObject's `value` is whatever getValue
+            // returned — for an object or array body value, a live reference
+            // into Annotation.data.  deepFreeze followed those references and
+            // froze documents this Entity does not own: a multi-target
+            // annotation shared with another Entity, and the very objects a form
+            // would build its next PUT body from.
+            this.#assertions = deepFreeze(structuredClone((this.#strategy === "display")
+                ? this._data
+                : applyAssertions(this._data, [...this.Annotations.values()].map(a => a.data))))
         }
         return this.#assertions
     }
@@ -366,6 +408,19 @@ class Entity extends EventTarget {
         // this same Entity on purpose — consumers that arrived with the old URI
         // keep resolving to it rather than constructing a second object.
         EntityMap.set(rerum.canonicalId(this.#id), this)
+        // A record answering to a Slug answers to TWO URIs, and RERUM treats
+        // them as one record — `/id/:_id` and `/id/:_id/expanded` both look up
+        // `{$or: [{_id}, {__rerum.slug}]}`.  Registering the alias makes this
+        // map agree.  Without it an annotation targeting the slug URI sends
+        // Annotation#registerTargets to getEntity() with a key nothing holds, so
+        // it builds a SECOND Entity for the same record, which resolves itself
+        // all over again: measured at 5 requests and two map entries for one
+        // record, with two assertion memos and two subscriber lists that never
+        // learn of each other's updates.  Registered here, before
+        // #findAssertions constructs any Annotation, so the alias is in place
+        // when the self-wiring runs.
+        const slugUri = slugAliasOf(candidate)
+        if (slugUri !== undefined) { EntityMap.set(slugUri, this) }
         // Silent while an editing resolution is mid-merge.  The raw entity
         // without its annotations is not a smaller version of the answer, it is
         // a document with NO PROVENANCE IN IT — same DEER shape, fewer keys, no
@@ -576,6 +631,8 @@ class Entity extends EventTarget {
                 // result itself, so there are no Annotations to attach.
                 const resolved = await expand.forDisplay(this.#id, { fresh })
                 if (generation !== this.#generation) { return }
+                // Before `set data`, which reads `assertions` to announce with.
+                this.#dataStrategy = strategy
                 this.data = resolved
                 this.#settled = true
                 this.#announce("complete")
@@ -586,6 +643,10 @@ class Entity extends EventTarget {
             // implementation of the provenance-critical path, not two.
             const { entity, annotations } = await expand.clientRead(this.#id, { fresh })
             if (generation !== this.#generation) { return }
+            // Before `set data` and #findAssertions, both of which read
+            // `assertions` — which refuses to answer while this disagrees with
+            // #strategy.
+            this.#dataStrategy = strategy
             // Held across `set data` so it cannot announce a half-merged
             // document; #findAssertions announces the finished one.  try/finally
             // because a throw out of `set data` must not leave the flag set and
