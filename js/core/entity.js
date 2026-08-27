@@ -616,6 +616,19 @@ class Entity extends EventTarget {
             incumbent.#mapKeys.add(key)
         }
         this.#mapKeys.clear()
+        // This Entity's live subscribers are consumers of the RECORD, and the
+        // record is the incumbent's to coordinate now, so their count moves
+        // with them.  Left behind here, the incumbent could hit zero and
+        // release itself — keys out of the map, a third Entity constructed for
+        // the record — while consumers were still listening through this
+        // object's forwarding.  Their teardowns decrement through `#adopted`
+        // (see subscribe), so the count settles on the incumbent when they
+        // leave, and net attendance is unchanged.
+        if (this.#subscribers > 0) {
+            incumbent.#subscribers += this.#subscribers
+            incumbent.#everSubscribed = true
+            this.#subscribers = 0
+        }
         // This Entity's own in-flight resolution is now redundant work whose
         // result must not be applied.  Bumping the generation retires it through
         // the checks #resolveURI already makes, so it lands and is discarded
@@ -669,14 +682,27 @@ class Entity extends EventTarget {
         }
     }
 
-    /** Re-enter the map after a #release, for a re-subscribed Entity. */
+    /**
+     * Re-enter the map after a #release, for a re-subscribed Entity.  Only
+     * reached when this Entity is not adopted — subscribe() delegates an
+     * adopted one to its incumbent before it gets here.
+     */
     #reclaim = () => {
-        if (this.#adopted !== undefined) {
-            if (this.#stopForwarding === undefined) { this.#forwardFrom(this.#adopted) }
-            return
+        // While this Entity was released another may have claimed its keys.
+        // That one is the record's coordinator now, so DEFER to it rather than
+        // re-entering beside it.  Reclaiming only the still-free keys left two
+        // live Entities for one record — separate documents, memos, and
+        // subscriber lists, with an update routed through the map reaching one
+        // of them and the re-subscriber replayed a stale document forever.
+        // That is the divergence #adopt exists to prevent, and `set data`
+        // already resolves the same collision the same way.
+        for (const key of this.#mapKeys) {
+            const holder = EntityMap.get(key)
+            if (holder !== undefined && holder !== this) {
+                this.#adopt(holder)
+                return
+            }
         }
-        // Never over a live holder: while this Entity was released another may
-        // have claimed the key, and that one is the record's coordinator now.
         for (const key of this.#mapKeys) {
             if (!EntityMap.has(key)) { EntityMap.set(key, this) }
         }
@@ -715,10 +741,16 @@ class Entity extends EventTarget {
     upgradeToEditing() {
         if (this.#adopted !== undefined) { return this.#adopted.upgradeToEditing() }
         if (this.#strategy === "editing") {
-            // Already on the right path.  resolve() would issue a whole new
-            // read of a settled Entity for nothing; only an unsettled one has a
-            // resolution worth waiting on, and resolve() shares that promise.
-            return this.#settled ? Promise.resolve() : this.resolve()
+            // Already on the right path.  A settled SUCCESS needs no read —
+            // resolve() would issue a whole new one for nothing — but a settled
+            // FAILURE is not an answer: #fail() sets #settled too, and treating
+            // the two alike made assertionsForEditing() replay the stale error
+            // forever, with no request made and no retry a form could reach.
+            // resolve() un-settles a failed Entity and retries fresh; an
+            // unsettled one shares the resolution already in flight.
+            return (this.#settled && this.#error === undefined)
+                ? Promise.resolve()
+                : this.resolve({ fresh: this.#error !== undefined })
         }
         this.#strategy = "editing"
         this.#assertions = undefined
@@ -745,10 +777,21 @@ class Entity extends EventTarget {
      * @returns {Function} call to unsubscribe.
      */
     subscribe(handler) {
+        // An adopted Entity has no lifecycle of its own — subscribing through
+        // it is subscribing to the RECORD, so the registration and the count
+        // both belong on the incumbent.  Counting here instead let the
+        // incumbent hit zero and release itself while consumers were still
+        // listening through this object: its keys left the map, a third
+        // Entity was constructed for the record, and this delegation chain
+        // never heard from it again.
+        if (this.#adopted !== undefined) { return this.#adopted.subscribe(handler) }
         // First subscriber after a #release puts this Entity back in the map, so
         // the ordinary custom-element disconnect/reconnect cycle does not leave
         // a working Entity that no new consumer can find.
         if (this.#subscribers === 0) { this.#reclaim() }
+        // #reclaim adopts the Entity that claimed this one's keys while it was
+        // released, so the delegation above has to be re-checked.
+        if (this.#adopted !== undefined) { return this.#adopted.subscribe(handler) }
         this.#everSubscribed = true
         this.#subscribers++
         const stop = this.#listen(handler)
@@ -760,8 +803,14 @@ class Entity extends EventTarget {
             if (done) { return }
             done = true
             stop()
-            this.#subscribers--
-            if (this.#subscribers === 0) { this.#release() }
+            // Decrement whoever owns the count NOW.  #adopt transfers this
+            // Entity's live count to its incumbent, so a teardown created
+            // before an adoption must release the incumbent, not this object —
+            // decrementing here would leave the incumbent pinned in the map by
+            // a count nothing can ever bring back down.
+            const owner = this.#adopted ?? this
+            owner.#subscribers--
+            if (owner.#subscribers === 0) { owner.#release() }
         }
     }
 
@@ -770,6 +819,8 @@ class Entity extends EventTarget {
      * counting it as a subscriber.  #adopt forwards through this: an adopter is
      * not a consumer, and counting it would pin the incumbent in the map for as
      * long as the adopter existed, which is the leak #release exists to close.
+     * (The adopter's own SUBSCRIBERS are consumers — #adopt transfers their
+     * count to the incumbent separately.)
      * Reads go through the public getters so an adopted Entity catches up from
      * the record's real state rather than from its own empty shell.
      * @param {Function} handler receives the same CustomEvents addEventListener would.
@@ -833,9 +884,17 @@ class Entity extends EventTarget {
         // carrying no provenance at all.
         const key = `${this.#strategy}:${rerum.canonicalId(this.#id)}`
         const pending = inFlight.get(key)
-        // A pending non-fresh resolution cannot satisfy a fresh request —
+        // Only THIS Entity's own pending read can satisfy this call.  The map
+        // is keyed by id, but the promise in it does one specific instance's
+        // work — and since #release an id can outlive its Entity, so a read
+        // still in flight can belong to a RELEASED predecessor.  Waiting on
+        // that one strands this Entity forever: the predecessor's landing read
+        // finds this Entity in the map and adopts it, retiring itself
+        // unsettled, while this one sits on the retired promise — mutual
+        // deferral, no fetch of its own, no error, no events.
+        // A pending non-fresh resolution also cannot satisfy a fresh request —
         // read-after-write must never be served a stale in-flight promise.
-        if (pending && (pending.fresh || !fresh)) { return pending.promise }
+        if (pending && pending.owner === this && (pending.fresh || !fresh)) { return pending.promise }
         // Starting a new resolution retires every older one.  The only way to
         // reach here with one already in flight is a fresh request overtaking a
         // non-fresh one, so newest-started is always the one that should win.
@@ -856,7 +915,7 @@ class Entity extends EventTarget {
         if (this.#error !== undefined) { this.#settled = false }
         const promise = this.#resolveURI(fresh)
             .finally(() => { if (inFlight.get(key)?.promise === promise) { inFlight.delete(key) } })
-        inFlight.set(key, { promise, fresh })
+        inFlight.set(key, { promise, fresh, owner: this })
         return promise
     }
 
