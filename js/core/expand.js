@@ -91,8 +91,10 @@ async function queryAll(body, label) {
             all.push(doc)
         }
         if (list.length < page) { return all }
-        if (fetched >= config.MAX_RESULTS) {
-            throw new RangeError(`${label}: ${config.MAX_RESULTS} documents fetched without reaching the end of this read — more match than the backstop allows, or the query endpoint is ignoring 'skip'. Refusing to return a partial merge — it would look complete and make the next form save POST a duplicate assertion for everything past the cut.`)
+        // Strictly greater: a read that ends exactly ON the backstop pays one
+        // extra (empty) page to prove it is complete rather than being refused.
+        if (fetched > config.MAX_RESULTS) {
+            throw new RangeError(`${label}: more than ${config.MAX_RESULTS} documents fetched without reaching the end of this read — more match than the backstop allows, or the query endpoint is ignoring 'skip'. Refusing to return a partial merge — it would look complete and make the next form save POST a duplicate assertion for everything past the cut.`)
         }
     }
 }

@@ -52,13 +52,18 @@ const config = {
  * Merge deployment overrides into the shipped defaults.
  *
  * @param {Object} overrides partial config; URLS merges key-by-key, ID_BASES
- * replaces wholesale and is normalized to trailing-slash form.
+ * replaces wholesale and is normalized to trailing-slash, https form.
  * @returns {Object} the live config object.
  */
 export function configure(overrides = {}) {
     const { URLS, ID_BASES, ...rest } = overrides
     if (URLS) { Object.assign(config.URLS, URLS) }
-    if (ID_BASES) { config.ID_BASES = ID_BASES.map(base => base.endsWith("/") ? base : `${base}/`) }
+    if (ID_BASES) {
+        config.ID_BASES = ID_BASES.map(base => {
+            const https = base.replace(/^http:/, "https:")
+            return https.endsWith("/") ? https : `${https}/`
+        })
+    }
     Object.assign(config, rest)
     return config
 }

@@ -29,7 +29,7 @@ function castValue(prop, asType) {
                 cast = parseFloat(prop)
                 break
             case "INTEGER":
-                cast = parseInt(prop)
+                cast = parseInt(prop, 10)
                 break
             case "BOOLEAN":
                 return !["false", "no", "0", "", "undefined", "null"].includes(String(prop).toLowerCase().trim())

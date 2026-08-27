@@ -239,6 +239,9 @@ class Entity extends EventTarget {
     // Tears down the event forwarding #adopt set up, or undefined when this
     // Entity is not currently forwarding.
     #stopForwarding
+    // How many of this Entity's own subscribe() handlers still rely on that
+    // forwarding.
+    #forwarding = 0
     // Every EntityMap key this Entity registered under.  A record is reached by
     // more than one URI and #release has to remove ALL of them -- a key
     // left pointing at a released Entity is worse than no release at all.
@@ -356,6 +359,16 @@ class Entity extends EventTarget {
         return this.assertions
     }
 
+    /**
+     * Replace this Entity's document.  Identical data is a no-op.
+     *
+     * When the assigned document's id turns out to be coordinated by ANOTHER
+     * Entity, this one defers to that incumbent and the assigned document is
+     * DISCARDED, not applied — the incumbent's own resolution is the authority
+     * on the record's state.  Every read through this Entity delegates to the
+     * incumbent from then on, so what you read back is the record, not what
+     * was assigned.
+     */
     set data(entity) {
         // An adopted Entity owns no document.  Assigning through it is assigning
         // to the record, which the incumbent coordinates.
@@ -447,6 +460,7 @@ class Entity extends EventTarget {
         if (hadSubscribers) {
             incumbent.#subscribers += this.#subscribers
             incumbent.#everSubscribed = true
+            this.#forwarding = this.#subscribers
             this.#subscribers = 0
         }
         // This Entity's own in-flight resolution is now redundant work whose
@@ -583,6 +597,10 @@ class Entity extends EventTarget {
             if (done) { return }
             done = true
             stop()
+            if (this.#adopted !== undefined && this.#forwarding > 0 && --this.#forwarding === 0) {
+                this.#stopForwarding?.()
+                this.#stopForwarding = undefined
+            }
             const owner = this.#adopted ?? this
             owner.#subscribers--
             if (owner.#subscribers === 0) { owner.#release() }

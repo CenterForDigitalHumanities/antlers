@@ -62,14 +62,14 @@ const ANNOTATION_TYPES = new Set([
 ])
 
 /**
- * Accepts a string or an array of strings, and matches EXACTLY the spellings the
- * server's annoTypeConditions match — no substring test, no namespace-prefix test.
+ * Accepts a string, an array of strings, or an array whose members are
+ * themselves arrays 
  *
- * @param {String|Array<String>} typeValue the document's type or @type.
+ * @param {String|Array} typeValue the document's type or @type, or both.
  * @returns {Boolean}
  */
 export function isAnnotationType(typeValue) {
-    return [typeValue].flat().some(t => typeof t === "string" && ANNOTATION_TYPES.has(t))
+    return [typeValue].flat(2).some(t => typeof t === "string" && ANNOTATION_TYPES.has(t))
 }
 
 /**
