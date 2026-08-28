@@ -122,11 +122,22 @@ function targetingClauses(uri) {
  * The client read path: an entity document and the Annotation documents
  * targeting it, RAW.
  *
- * ONE round trip for an ordinary record — a compound `$or` query matching the
- * entity's own @id alongside every targeting style, paged.
+ * TWO requests, issued in PARALLEL, so the cost is the slower of the pair: a
+ * direct GET for the entity and one paged query for the annotations targeting
+ * it.  A record with a RERUM Slug costs one further query.
+ *
+ * The entity is deliberately NOT folded into the annotation query's `$or`.
+ * Measured on devstore against a 7-annotation entity: an `$or` combining the
+ * entity's `@id` with the targeting clauses costs ~1530 ms, because mixing an
+ * `@id` match and a nested `$and`/`$or` under one `$or` defeats index
+ * selection — more than the sum of its parts (~460 ms for the `@id` branch
+ * alone, ~65 ms for the targeting branch alone).  Split in two and run in
+ * parallel the same read is ~160 ms end to end and returns identical
+ * documents, provenance included.  One round trip is not worth 10x the
+ * latency on the path a form prefills from.
  *
  * @param {String|Object} id the entity URI or an object carrying one.
- * @param {Object} options `fresh` busts the HTTP cache on the recovery GET.
+ * @param {Object} options `fresh` busts the HTTP cache on the entity GET.
  * @returns {Promise<{entity: Object, annotations: Array<Object>}>} raw documents:
  * the entity, and the annotations THIS deployment wrote against it.  The
  * generator filter is part of the query, so a merge never has to re-check who
@@ -136,24 +147,24 @@ function targetingClauses(uri) {
 export async function clientRead(id, { fresh = false } = {}) {
     const uri = rerum.idOf(id)
     requireRerumId(uri)
-    const uris = rerum.httpsIdArray(uri)
-    // The generator filter belongs on the TARGETING branch only.  RERUM is
-    // shared: another application's annotations on this entity are not ours to
-    // merge.
-    const list = await queryAll({
-        "$or": [
-            { "@id": uris },
-            {
-                "$and": [
-                    { "$or": targetingClauses(uri) },
-                    { "__rerum.generatedBy": rerum.generatedBy() }
-                ]
-            }
-        ],
-        "__rerum.history.next": { "$exists": true, "$size": 0 }
-    }, uri)
+    // Both reads are independent, so neither waits on the other.  generatedBy()
+    // is called before the await so a missing generator still throws
+    // synchronously into the returned promise rather than after a request has
+    // already gone out.  RERUM is shared: another application's annotations on
+    // this entity are not ours to merge.
+    const generatedBy = rerum.generatedBy()
+    const [resolved, list] = await Promise.all([
+        rerum.resolve(uri, { fresh }),
+        queryAll({
+            "$or": targetingClauses(uri),
+            "__rerum.generatedBy": generatedBy,
+            "__rerum.history.next": { "$exists": true, "$size": 0 }
+        }, uri)
+    ])
+    const entity = requireDocument(resolved, `The read of ${uri}`)
+    // The entity cannot assert about itself.  It reaches the annotation list
+    // only by targeting its own URI, which would otherwise merge it onto itself.
     const isSelf = (doc) => rerum.canonicalId(doc?.["@id"] ?? doc?.id) === rerum.canonicalId(uri)
-    const entity = requireDocument(list.find(isSelf) ?? await rerum.resolve(uri, { fresh }), `The read of ${uri}`)
     const annotations = onlyAnnotations(list.filter(doc => !isSelf(doc)))
     return {
         entity,
@@ -226,7 +237,7 @@ export async function forDisplay(id, { fresh = false } = {}) {
         const deployment = config.ID_BASES.find(base => rerum.canonicalId(uri).startsWith(base)) ?? uri
         if (!uncountedDeployments.has(deployment)) {
             uncountedDeployments.add(deployment)
-            console.warn(`${deployment} does not send the Annotations-Gathered/Annotations-Merged headers on /expanded, so the completeness of the server merge cannot be verified. Every display read falls back to the client path: correct, but the cacheable read path is effectively disabled and each read now costs two requests. Upgrade the RERUM deployment.`)
+            console.warn(`${deployment} does not send the Annotations-Gathered/Annotations-Merged headers on /expanded, so the completeness of the server merge cannot be verified. Every display read falls back to the client path: correct, but the cacheable read path is effectively disabled and each read now costs three requests instead of one. Upgrade the RERUM deployment.`)
         }
         return displayScrubbed(await clientMerge(uri, { fresh }))
     }

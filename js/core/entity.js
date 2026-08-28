@@ -69,7 +69,7 @@ function objectMatch(o1 = {}, o2 = {}) {
 /**
  * Freeze an object and everything reachable from it.  Object.freeze is shallow
  * and `assertions.name.value = …` reaches straight past a shallow freeze.
- * Freezing before recursing makes this safe on a self-referential document: the cycle 
+ * Freezing before recursing makes this safe on a self-referential document: the cycle
  * is already frozen when it comes back around.
  *
  * @param {any} value the value to freeze, in place.

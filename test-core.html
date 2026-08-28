@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>DEER 2.0 Core Bench</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://unpkg.com/chota@latest">
+    <style>
+        body { max-width: 76rem; margin-inline: auto; padding-inline: 1rem; }
+        section { border: 1px solid var(--color-lightGrey); border-radius: 4px; padding: 1rem; margin-block: 1.5rem; }
+        h2 { margin-bottom: 0.25rem; }
+        .hint { color: var(--color-darkGrey); font-size: 0.85rem; margin-block: 0.25rem 0.75rem; }
+        .group { display: grid; gap: 0.35rem; margin-bottom: 0.5rem; }
+        .panes { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); }
+        pre.out { background: #1d1f21; color: #c5c8c6; padding: 0.75rem; overflow: auto; max-height: 24rem; font-size: 0.75rem; }
+        .tag { display: inline-block; background: var(--color-primary); color: #fff; border-radius: 3px; padding: 0 0.4rem; font-size: 0.75rem; }
+        .status { min-height: 1.5rem; font-size: 0.85rem; overflow-wrap: anywhere; }
+        .status[data-state="error"] { color: var(--color-error); font-weight: 600; }
+        .status[data-state="ok"] { color: var(--color-success); }
+        .verdict { display: grid; gap: 0.2rem; font-size: 0.85rem; margin-block: 0.5rem; }
+        .verdict span::before { content: "… "; }
+        .verdict span[data-pass="true"]::before { content: "PASS "; color: var(--color-success); font-weight: 700; }
+        .verdict span[data-pass="false"]::before { content: "FAIL "; color: var(--color-error); font-weight: 700; }
+        fieldset { border: 1px solid var(--color-lightGrey); border-radius: 4px; margin-block: 0.75rem; padding: 0.6rem 0.75rem; }
+        legend { font-size: 0.85rem; padding-inline: 0.35rem; }
+        table.log { font-size: 0.75rem; width: 100%; }
+        table.log td, table.log th { padding: 0.15rem 0.4rem; }
+        .num { text-align: end; font-variant-numeric: tabular-nums; }
+        ul.rows { list-style: none; padding: 0; }
+        ul.rows li { border-bottom: 1px solid var(--color-lightGrey); padding-block: 0.4rem; }
+        dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.1rem 0.75rem; font-size: 0.85rem; margin: 0; }
+        dl.kv dt { font-weight: 600; }
+        dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+        label { display: block; }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>DEER 2.0 Core Bench</h1>
+        <p class="hint">
+            Drives <code>/js/core/</code> directly — no elements, no templates, no
+            <code>deer-*</code> attributes, because those are PR 3 and PR 4. Every binding below is
+            hand-written page script using <code>textContent</code>, which is what the elements will
+            do for you later. The sibling page <a href="/test.html">test.html</a> runs the same
+            fixtures through 0.11 for comparison.
+        </p>
+        <p class="hint">
+            Everything written here is tagged <code>ANTLERS_2_0_TEST_AGENT</code> as
+            <code>creator</code> on the entity and on every Annotation, because the devstore
+            <code>generator</code> is shared by every app and cannot discriminate.
+        </p>
+    </header>
+
+    <main>
+        <!-- ==========================================================
+             0. CONFIG — what every read and write below is pointed at.
+             ========================================================== -->
+        <section>
+            <h2>0. Configuration</h2>
+            <p class="hint">
+                Read from <code>js/core/config.js</code>. <code>GENERATOR</code> rides in the URL of
+                every server read and in the <code>__rerum.generatedBy</code> clause of every client
+                read — never a header, because the browser cache keys on URL.
+            </p>
+            <dl class="kv" id="configOut"></dl>
+            <p>
+                <label><input type="checkbox" id="debugToggle"> <code>config.DEBUG</code> — verbose library logging</label>
+            </p>
+        </section>
+
+        <!-- ==========================================================
+             1. CREATE — the photo-album use case from antlers#1.
+             ========================================================== -->
+        <section>
+            <h2>1. Create a Person</h2>
+            <p class="hint">
+                One <code>rerum.create()</code> for the entity, then one per asserted field as an
+                Annotation with a single-key body — the only body shape the server merges. The
+                multi-value groups below carry a real array with no hidden tracker, no delimiter and
+                no <code>previousElementSibling</code> coupling; that is what
+                <code>deer-input</code> will own in PR 3.
+            </p>
+
+            <form id="createForm">
+                <label for="c-name">Name</label>
+                <input type="text" id="c-name" data-key="name" placeholder="Ada Lovelace" autocomplete="name" required>
+
+                <label for="c-desc">Description</label>
+                <textarea id="c-desc" data-key="description" placeholder="A short description."></textarea>
+
+                <fieldset data-multi data-key="email">
+                    <legend>Email <span class="tag">Set</span></legend>
+                    <div class="group" data-inputs>
+                        <input type="email" aria-label="Email 1" placeholder="one@example.org" autocomplete="email">
+                    </div>
+                    <button class="button outline" type="button" data-add>Add another email</button>
+                </fieldset>
+
+                <fieldset data-multi data-key="address">
+                    <legend>Address <span class="tag">Set</span></legend>
+                    <div class="group" data-inputs>
+                        <input type="text" aria-label="Address 1" placeholder="221B Baker Street, London">
+                    </div>
+                    <button class="button outline" type="button" data-add>Add another address</button>
+                </fieldset>
+
+                <fieldset data-multi data-key="telephone">
+                    <legend>Phone Number <span class="tag">Set</span></legend>
+                    <div class="group" data-inputs>
+                        <input type="tel" aria-label="Phone 1" placeholder="+1 314 555 0100" autocomplete="tel">
+                    </div>
+                    <button class="button outline" type="button" data-add>Add another phone</button>
+                </fieldset>
+
+                <fieldset data-multi data-key="depiction">
+                    <legend>Photo URIs <span class="tag">Set</span></legend>
+                    <p class="hint">The family-album depictions. Each photo has its own URI.</p>
+                    <div class="group" data-inputs>
+                        <input type="url" aria-label="Photo URI 1" placeholder="https://example.org/photos/1.jpg">
+                    </div>
+                    <button class="button outline" type="button" data-add>Add another photo</button>
+                </fieldset>
+
+                <label>
+                    <input type="checkbox" id="c-dupname">
+                    Also assert <code>name</code> as an Annotation — reproduces the heterogeneous
+                    merge documented in antlers#1
+                </label>
+
+                <p><button class="button primary" type="submit">Create Person</button></p>
+            </form>
+            <p class="status" id="createStatus" role="status" aria-live="polite"></p>
+            <dl class="kv" id="createOut"></dl>
+        </section>
+
+        <!-- ==========================================================
+             2. READ COMPARISON — the PR 1 contract in one panel.
+             ========================================================== -->
+        <section>
+            <h2>2. Read comparison — forDisplay vs forEditing</h2>
+            <p class="hint">
+                The two read paths, on one entity. They must produce identical VALUES; only
+                provenance and cost may differ. <code>forDisplay</code> is the cacheable server merge
+                and carries no annotation <code>@id</code>s at all. <code>forEditing</code> is the
+                client path and carries one per merged value. One extra bookkeeping read runs
+                first to pull the server's own <code>Annotations-Merged</code> count; the timings
+                and request counts below are measured on the two reads that follow it.
+            </p>
+            <div class="group">
+                <label for="cmpTarget">Entity URI</label>
+                <input type="url" id="cmpTarget" placeholder="https://devstore.rerum.io/v1/id/...">
+            </div>
+            <p>
+                <button class="button primary" type="button" id="cmpGo">Compare</button>
+                <button class="button outline" type="button" data-uselast="cmpTarget">Use last created</button>
+                <button class="button outline" type="button" id="cmpFixture">Use antlers#1 fixture</button>
+            </p>
+            <p class="status" id="cmpStatus" role="status" aria-live="polite"></p>
+            <div class="verdict" id="cmpVerdict"></div>
+            <div class="panes">
+                <div>
+                    <h3>forDisplay</h3>
+                    <pre class="out" id="outDisplay">-</pre>
+                </div>
+                <div>
+                    <h3>forEditing</h3>
+                    <pre class="out" id="outEditing">-</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==========================================================
+             3. EDIT — prefill through assertionsForEditing(), then
+                create-vs-update decided by source.citationSource.
+             ========================================================== -->
+        <section>
+            <h2>3. Annotate an existing entity</h2>
+            <p class="hint">
+                Prefills through <code>Entity#assertionsForEditing()</code> — the only door a form may
+                prefill through, because <code>.assertions</code> returns whatever strategy the Entity
+                happens to be on and a display document has no provenance. On save, a field that
+                arrived with a <code>source.citationSource</code> is <code>update</code>d in place;
+                one without is a new <code>create</code>. That is the create-vs-update trigger.
+            </p>
+            <p class="hint">
+                Note what saving does NOT do: an <code>Entity</code> has no way to know a write
+                happened, so this page calls <code>resolve({ fresh: true })</code> itself before
+                re-reading. Skip that and the next save sees no <code>citationSource</code> and
+                POSTs a duplicate assertion — the silent corruption antlers#1 describes. PR 3 moves
+                that responsibility into <code>deer-form</code>.
+            </p>
+            <div class="group">
+                <label for="editTarget">Entity URI</label>
+                <input type="url" id="editTarget" placeholder="https://devstore.rerum.io/v1/id/...">
+            </div>
+            <p>
+                <button class="button primary" type="button" id="editLoad">Load for editing</button>
+                <button class="button outline" type="button" data-uselast="editTarget">Use last created</button>
+            </p>
+            <p class="status" id="editStatus" role="status" aria-live="polite"></p>
+
+            <form id="editForm" hidden>
+                <label for="e-job">Job Title</label>
+                <input type="text" id="e-job" data-key="jobTitle" placeholder="Mathematician">
+                <p class="hint" data-prov="jobTitle"></p>
+
+                <label for="e-birth">Birth Date</label>
+                <input type="date" id="e-birth" data-key="birthDate">
+                <p class="hint" data-prov="birthDate"></p>
+
+                <label for="e-note">Note</label>
+                <textarea id="e-note" data-key="note" placeholder="Anything worth asserting."></textarea>
+                <p class="hint" data-prov="note"></p>
+
+                <p><button class="button primary" type="submit">Save</button></p>
+            </form>
+        </section>
+
+        <!-- ==========================================================
+             4. COLLECTION — render coordination made visible.
+             ========================================================== -->
+        <section>
+            <h2>4. Test collection</h2>
+            <p class="hint">
+                Every entity created here carries <code>targetCollection = AntlersTestPeople</code>.
+                Each row asks <code>getEntity()</code> for the SAME id twice, deliberately: deer#96
+                says both consumers must share one Entity and one round trip. The counters below are
+                the proof, and <em>Release rows</em> shows the map draining when the last subscriber
+                leaves.
+            </p>
+            <p>
+                <button class="button primary" type="button" id="collectionGo">Load collection</button>
+                <button class="button outline" type="button" id="collectionRelease">Release rows</button>
+            </p>
+            <p class="status" id="collectionStatus" role="status" aria-live="polite"></p>
+            <dl class="kv" id="collectionStats"></dl>
+            <ul class="rows" id="collectionRows"></ul>
+        </section>
+
+        <!-- ==========================================================
+             5. INSPECTOR — raw vs /expanded vs the client read.
+             ========================================================== -->
+        <section>
+            <h2>5. Inspector</h2>
+            <p class="hint">
+                The plain document, the server <code>/expanded</code> merge, and the annotations the
+                CLIENT read gathers. The client column uses <code>expand.clientRead()</code>, which
+                matches six targeting shapes plus fragment targets — a hand-rolled
+                <code>{ target: id }</code> query undercounts and makes the survivor number below
+                look better than it is.
+            </p>
+            <div class="group">
+                <label for="inspectTarget">Entity URI</label>
+                <input type="url" id="inspectTarget" placeholder="https://devstore.rerum.io/v1/id/...">
+            </div>
+            <p>
+                <button class="button primary" type="button" id="inspectGo">Inspect</button>
+                <button class="button outline" type="button" data-uselast="inspectTarget">Use last created</button>
+                <button class="button outline" type="button" id="copyFixture">Copy fixture JSON</button>
+            </p>
+            <p class="status" id="inspectStatus" role="status" aria-live="polite"></p>
+            <dl class="kv" id="inspectSummary"></dl>
+            <div class="panes">
+                <div>
+                    <h3>Raw entity</h3>
+                    <pre class="out" id="outRaw">-</pre>
+                </div>
+                <div>
+                    <h3>/expanded</h3>
+                    <pre class="out" id="outExpanded">-</pre>
+                </div>
+                <div>
+                    <h3>Targeting annotations</h3>
+                    <pre class="out" id="outAnnos">-</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- ==========================================================
+             6. DANGER — delete, and read-after-write.
+             ========================================================== -->
+        <section>
+            <h2>6. Delete</h2>
+            <p class="hint">
+                <code>rerum.delete()</code> — exported under the name the back end uses. Pass the whole
+                document when you have it: deleting an Annotation changes its target's
+                <code>/expanded</code> merge, and the target can only be invalidated from a document
+                that still names it. A tombstone does not. Watch the request log for the
+                <code>cache: reload</code> that follows.
+            </p>
+            <p class="hint">
+                Expect a surprise when you delete an Annotation that has been UPDATED: RERUM heals
+                the version chain, so the version it superseded becomes live again and the property
+                comes back with its older value rather than disappearing. Both read paths show what
+                is live, which is correct — delete the whole chain if you meant to remove the
+                assertion.
+            </p>
+            <div class="group">
+                <label for="deleteTarget">Document URI</label>
+                <input type="url" id="deleteTarget" placeholder="https://devstore.rerum.io/v1/id/...">
+            </div>
+            <p>
+                <button class="button error" type="button" id="deleteGo">Delete</button>
+                <button class="button outline" type="button" data-uselast="deleteTarget">Use last created</button>
+            </p>
+            <p class="status" id="deleteStatus" role="status" aria-live="polite"></p>
+        </section>
+
+        <!-- ==========================================================
+             7. REQUEST LOG — config.fetch is the instrumentation point.
+             ========================================================== -->
+        <section>
+            <h2>7. Request log</h2>
+            <p class="hint">
+                Every request the core makes, captured by replacing <code>config.fetch</code> — the
+                injection point antlers#1 names for exactly this. <code>cache</code> shows
+                <code>reload</code> when a write has invalidated that URL and the next read is busting
+                it.
+            </p>
+            <p>
+                <button class="button outline" type="button" id="logClear">Clear log</button>
+                <span class="hint" id="logCount"></span>
+            </p>
+            <table class="log">
+                <caption class="hint">Newest first, capped at 60 entries.</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">#</th>
+                        <th scope="col">Method</th>
+                        <th scope="col">Cache</th>
+                        <th scope="col" class="num">Status</th>
+                        <th scope="col" class="num">ms</th>
+                        <th scope="col">URL</th>
+                    </tr>
+                </thead>
+                <tbody id="logBody"></tbody>
+            </table>
+        </section>
+    </main>
+
+    <script type="module">
+        import config from '/js/core/config.js'
+        import * as rerum from '/js/core/rerum.js'
+        import * as expand from '/js/core/expand.js'
+        import { getEntity, reserveEditing, clearEntities, EntityMap } from '/js/core/entity.js'
+        import { IDENTITY_KEYS } from '/js/core/assertions.js'
+
+        const TAG = 'ANTLERS_2_0_TEST_AGENT'
+        const COLLECTION = 'AntlersTestPeople'
+        const FIXTURE = 'https://devstore.rerum.io/v1/id/5d7ba417e4b07f0c56c0f539'
+
+        const $ = (id) => document.getElementById(id)
+        const isIdentity = (key) => IDENTITY_KEYS.includes(key)
+
+        /* -------------------------------------------------- instrumentation */
+
+        const log = []
+        const nativeFetch = globalThis.fetch.bind(globalThis)
+
+        config.fetch = async (url, options = {}) => {
+            const started = performance.now()
+            try {
+                const response = await nativeFetch(url, options)
+                record(url, options, response.status, started)
+                return response
+            } catch (err) {
+                record(url, options, 'network', started)
+                throw err
+            }
+        }
+
+        function record(url, options, status, started) {
+            log.unshift({
+                method: options.method ?? 'GET',
+                cache: options.cache ?? '',
+                status,
+                ms: Math.round(performance.now() - started),
+                url: String(url)
+            })
+            log.length = Math.min(log.length, 60)
+            renderLog()
+        }
+
+        function renderLog() {
+            const body = $('logBody')
+            body.replaceChildren()
+            log.forEach((entry, index) => {
+                const row = document.createElement('tr')
+                const cells = [log.length - index, entry.method, entry.cache, entry.status, entry.ms, entry.url]
+                cells.forEach((value, column) => {
+                    const cell = document.createElement('td')
+                    if (column === 0 || column === 3 || column === 4) { cell.className = 'num' }
+                    cell.textContent = String(value)
+                    row.append(cell)
+                })
+                body.append(row)
+            })
+            $('logCount').textContent = `${log.length} request${log.length === 1 ? '' : 's'} captured`
+        }
+
+        $('logClear').addEventListener('click', () => { log.length = 0; renderLog() })
+
+        /* -------------------------------------------------- small helpers */
+
+        const say = (id, message, state = '') => {
+            const node = $(id)
+            node.textContent = message
+            node.dataset.state = state
+        }
+
+        const dump = (id, value) => {
+            $(id).textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+        }
+
+        function describe(target, pairs) {
+            const list = $(target)
+            list.replaceChildren()
+            for (const [term, definition] of pairs) {
+                const dt = document.createElement('dt')
+                dt.textContent = term
+                const dd = document.createElement('dd')
+                dd.textContent = String(definition)
+                list.append(dt, dd)
+            }
+        }
+
+        function verdict(target, checks) {
+            const box = $(target)
+            box.replaceChildren()
+            for (const [label, passed] of checks) {
+                const line = document.createElement('span')
+                line.dataset.pass = String(passed)
+                line.textContent = label
+                box.append(line)
+            }
+        }
+
+        /** Every asserted (non-identity) entry of a shaped document, flattened. */
+        const asserted = (shaped) => Object.entries(shaped).filter(([key]) => !isIdentity(key))
+
+        /** The values alone, provenance discarded — what the two read paths must agree on. */
+        const valuesOnly = (shaped) => JSON.stringify(Object.fromEntries(
+            asserted(shaped).map(([key, val]) => [key, [val].flat().map(v => v?.value)])
+        ))
+
+        /* -------------------------------------------------- last created */
+
+        let lastCreated = sessionStorage.getItem('antlers-core-last') ?? ''
+
+        function rememberCreated(uri) {
+            lastCreated = uri
+            sessionStorage.setItem('antlers-core-last', uri)
+        }
+
+        for (const button of document.querySelectorAll('[data-uselast]')) {
+            button.addEventListener('click', () => {
+                if (!lastCreated) {
+                    window.alert('Nothing created in this session yet. Create a Person first, or paste a URI.')
+                    return
+                }
+                $(button.dataset.uselast).value = lastCreated
+            })
+        }
+
+        /* -------------------------------------------------- 0. config */
+
+        describe('configOut', [
+            ['GENERATOR', config.GENERATOR],
+            ['ID_BASES', config.ID_BASES.join('  ')],
+            ['CREATE', config.URLS.CREATE],
+            ['UPDATE', config.URLS.UPDATE],
+            ['DELETE', config.URLS.DELETE],
+            ['QUERY', config.URLS.QUERY],
+            ['LIMIT / MAX_RESULTS', `${config.LIMIT} / ${config.MAX_RESULTS}`]
+        ])
+
+        $('debugToggle').checked = config.DEBUG
+        $('debugToggle').addEventListener('change', (event) => { config.DEBUG = event.target.checked })
+
+        /* -------------------------------------------------- 1. create */
+
+        for (const group of document.querySelectorAll('[data-multi]')) {
+            group.querySelector('[data-add]').addEventListener('click', () => {
+                const container = group.querySelector('[data-inputs]')
+                const template = container.querySelector('input')
+                const next = template.cloneNode(false)
+                next.value = ''
+                const position = container.querySelectorAll('input').length + 1
+                next.setAttribute('aria-label', template.getAttribute('aria-label').replace(/\d+$/, position))
+                container.append(next)
+                next.focus()
+            })
+        }
+
+        /** Read the form into { singles, multiples } with empties dropped. */
+        function readCreateForm() {
+            const singles = {}
+            for (const field of document.querySelectorAll('#createForm [data-key]:not([data-multi])')) {
+                const value = field.value.trim()
+                if (value) { singles[field.dataset.key] = value }
+            }
+            const multiples = {}
+            for (const group of document.querySelectorAll('#createForm [data-multi]')) {
+                const values = [...group.querySelectorAll('[data-inputs] input')]
+                    .map(input => input.value.trim())
+                    .filter(Boolean)
+                if (values.length) { multiples[group.dataset.key] = values }
+            }
+            return { singles, multiples }
+        }
+
+        $('createForm').addEventListener('submit', async (event) => {
+            event.preventDefault()
+            const { singles, multiples } = readCreateForm()
+            if (!singles.name) {
+                say('createStatus', 'A name is required.', 'error')
+                return
+            }
+            say('createStatus', 'Creating...')
+            describe('createOut', [])
+            try {
+                const entity = await rerum.create({
+                    '@context': 'http://schema.org',
+                    '@type': 'Person',
+                    name: singles.name,
+                    creator: TAG,
+                    targetCollection: COLLECTION
+                })
+                const target = rerum.idOf(entity)
+
+                // One Annotation per asserted field, each with a SINGLE-KEY body —
+                // the only body shape both read paths merge.
+                const bodies = []
+                for (const [key, value] of Object.entries(singles)) {
+                    if (key === 'name' && !$('c-dupname').checked) { continue }
+                    bodies.push({ [key]: value })
+                }
+                for (const [key, values] of Object.entries(multiples)) {
+                    bodies.push({ [key]: values })
+                }
+
+                const annotations = []
+                for (const body of bodies) {
+                    annotations.push(await rerum.create({
+                        '@context': 'http://www.w3.org/ns/anno.jsonld',
+                        type: 'Annotation',
+                        target,
+                        body,
+                        creator: TAG
+                    }))
+                }
+
+                rememberCreated(target)
+                describe('createOut', [
+                    ['Entity', target],
+                    ['Annotations', annotations.length],
+                    ['Annotation @ids', annotations.map(a => rerum.idOf(a)).join('  ')]
+                ])
+                say('createStatus', `Created the entity and ${annotations.length} annotation${annotations.length === 1 ? '' : 's'}. Every write marked its target stale, so the next read of it busts the cache.`, 'ok')
+            } catch (err) {
+                say('createStatus', `Create failed: ${err.message}`, 'error')
+                console.error(err)
+            }
+        })
+
+        /* -------------------------------------------------- 2. read comparison */
+
+        $('cmpFixture').addEventListener('click', () => { $('cmpTarget').value = FIXTURE })
+
+        $('cmpGo').addEventListener('click', async () => {
+            const uri = $('cmpTarget').value.trim()
+            if (!uri) { return }
+            say('cmpStatus', 'Reading both paths...')
+            verdict('cmpVerdict', [])
+            dump('outDisplay', '...')
+            dump('outEditing', '...')
+            try {
+                // One bookkeeping read first, for the server's own merge counts.  The
+                // two timed reads below are what the request-count checks measure.
+                const server = await rerum.expanded(uri, { fresh: true })
+
+                const before = log.length
+                const displayStarted = performance.now()
+                const display = await expand.forDisplay(uri, { fresh: true })
+                const displayMs = Math.round(performance.now() - displayStarted)
+                const displayRequests = log.length - before
+
+                const midpoint = log.length
+                const editingStarted = performance.now()
+                const editing = await expand.forEditing(uri)
+                const editingMs = Math.round(performance.now() - editingStarted)
+                const editingRequests = log.length - midpoint
+
+                dump('outDisplay', display)
+                dump('outEditing', editing)
+
+                const displayHasNoProvenance = asserted(display)
+                    .every(([, val]) => [val].flat().every(v => !v?.source?.citationSource))
+                // An entity's OWN properties carry no citationSource and should not — only
+                // values an Annotation asserted do.  So the exact check is not "every
+                // property has provenance" but "the client cited exactly as many
+                // annotations as the server says it merged".
+                const cited = new Set(asserted(editing)
+                    .flatMap(([, val]) => [val].flat().map(v => v?.source?.citationSource))
+                    .filter(Boolean))
+                const ownOnly = asserted(editing)
+                    .filter(([, val]) => [val].flat().every(v => !v?.source?.citationSource))
+                    .map(([key]) => key)
+
+                verdict('cmpVerdict', [
+                    [`Values identical across both paths`, valuesOnly(display) === valuesOnly(editing)],
+                    [`Same property set on both paths`, asserted(display).map(([k]) => k).sort().join() === asserted(editing).map(([k]) => k).sort().join()],
+                    [`forDisplay carries no annotation @id (it can never emit deer-source)`, displayHasNoProvenance],
+                    [`forEditing cited ${cited.size} annotation(s); server merged ${server.merged ?? '(header absent)'} of ${server.gathered ?? '?'} gathered`, server.merged === null || cited.size === server.merged],
+                    [`Carrying no provenance, correctly: ${ownOnly.join(', ') || '(none)'} — entity-own properties, not asserted by any annotation`, ownOnly.every(key => key in display)],
+                    [`forDisplay cost ${displayRequests} request(s) in ${displayMs} ms`, displayRequests === 1],
+                    [`forEditing cost ${editingRequests} request(s) in ${editingMs} ms`, editingRequests <= 3]
+                ])
+                say('cmpStatus', 'Done.', 'ok')
+            } catch (err) {
+                say('cmpStatus', `Read failed: ${err.message}`, 'error')
+                dump('outDisplay', '-')
+                dump('outEditing', '-')
+                console.error(err)
+            }
+        })
+
+        /* -------------------------------------------------- 3. edit */
+
+        let editing = null
+
+        $('editLoad').addEventListener('click', async () => {
+            const uri = $('editTarget').value.trim()
+            if (!uri) { return }
+            say('editStatus', 'Loading through the editing read...')
+            $('editForm').hidden = true
+            try {
+                // Reserve BEFORE anything constructs an Entity: a display read cannot be
+                // topped up into an editing one, only thrown away.
+                reserveEditing(uri)
+                const entity = getEntity(uri, { strategy: 'editing' })
+                const assertions = await entity.assertionsForEditing()
+                editing = { uri, entity, assertions }
+
+                for (const field of document.querySelectorAll('#editForm [data-key]')) {
+                    const key = field.dataset.key
+                    const held = [assertions[key]].flat()[0]
+                    field.value = held?.value ?? ''
+                    const note = document.querySelector(`[data-prov="${key}"]`)
+                    note.textContent = held?.source?.citationSource
+                        ? `asserted by ${held.source.citationSource} — saving will UPDATE that annotation`
+                        : 'no annotation asserts this yet — saving will CREATE one'
+                }
+                $('editForm').hidden = false
+                say('editStatus', `Loaded. Strategy: ${entity.strategy}. EntityMap holds ${EntityMap.size} record key(s).`, 'ok')
+            } catch (err) {
+                say('editStatus', `Load failed: ${err.message}`, 'error')
+                console.error(err)
+            }
+        })
+
+        $('editForm').addEventListener('submit', async (event) => {
+            event.preventDefault()
+            if (!editing) { return }
+            say('editStatus', 'Saving...')
+            const created = []
+            const updated = []
+            try {
+                for (const field of document.querySelectorAll('#editForm [data-key]')) {
+                    const key = field.dataset.key
+                    const value = field.value.trim()
+                    const held = [editing.assertions[key]].flat()[0]
+                    const source = held?.source?.citationSource
+                    if (!value) { continue }
+                    if (String(held?.value ?? '') === value) { continue }
+                    if (source) {
+                        // The provenance link is what makes this an update rather than a
+                        // second annotation asserting the same property.
+                        const annotation = await rerum.resolve(source)
+                        updated.push(rerum.idOf(await rerum.update({ ...annotation, body: { [key]: value } })))
+                        continue
+                    }
+                    created.push(rerum.idOf(await rerum.create({
+                        '@context': 'http://www.w3.org/ns/anno.jsonld',
+                        type: 'Annotation',
+                        target: editing.uri,
+                        body: { [key]: value },
+                        creator: TAG
+                    })))
+                }
+                if (!created.length && !updated.length) {
+                    say('editStatus', 'Nothing changed.', 'ok')
+                    return
+                }
+                // An Entity does not re-read itself after a write — it has no way to know
+                // one happened.  assertionsForEditing() on an already-settled editing
+                // Entity is a no-op and would hand back the MEMOIZED pre-write view, so
+                // the next save would see no citationSource and POST a duplicate
+                // assertion instead of updating.  antlers#1 puts this cache-busting
+                // re-read on deer-form for exactly this reason; until PR 3 the page owns it.
+                await editing.entity.resolve({ fresh: true })
+                editing.assertions = await editing.entity.assertionsForEditing()
+                for (const field of document.querySelectorAll('#editForm [data-key]')) {
+                    const held = [editing.assertions[field.dataset.key]].flat()[0]
+                    const note = document.querySelector(`[data-prov="${field.dataset.key}"]`)
+                    note.textContent = held?.source?.citationSource
+                        ? `asserted by ${held.source.citationSource} — saving will UPDATE that annotation`
+                        : 'no annotation asserts this yet — saving will CREATE one'
+                }
+                say('editStatus', `Updated ${updated.length}, created ${created.length}. Re-read shows one value per property, not two — a superseded annotation asserts nothing.`, 'ok')
+            } catch (err) {
+                say('editStatus', `Save failed: ${err.message}`, 'error')
+                console.error(err)
+            }
+        })
+
+        /* -------------------------------------------------- 4. collection */
+
+        let teardowns = []
+
+        function releaseRows() {
+            for (const stop of teardowns) { stop() }
+            teardowns = []
+            $('collectionRows').replaceChildren()
+            describe('collectionStats', [['EntityMap size', EntityMap.size]])
+            say('collectionStatus', `Released. EntityMap holds ${EntityMap.size} key(s) — an Entity nobody listens to has no coordination left to do.`, EntityMap.size === 0 ? 'ok' : '')
+        }
+
+        $('collectionRelease').addEventListener('click', releaseRows)
+
+        $('collectionGo').addEventListener('click', async () => {
+            releaseRows()
+            clearEntities()
+            say('collectionStatus', 'Querying the collection...')
+            try {
+                const before = log.length
+                const finds = await rerum.query({
+                    targetCollection: COLLECTION,
+                    creator: TAG,
+                    '__rerum.history.next': { $exists: true, $size: 0 }
+                }, { limit: 25, skip: 0 })
+
+                const rows = $('collectionRows')
+                rows.replaceChildren()
+                const queryRequests = log.length - before
+                const readsStarted = log.length
+
+                for (const found of finds) {
+                    const uri = rerum.idOf(found)
+                    const item = document.createElement('li')
+                    const heading = document.createElement('strong')
+                    const detail = document.createElement('div')
+                    detail.className = 'hint'
+                    const link = document.createElement('a')
+                    link.href = uri
+                    link.textContent = uri
+                    link.rel = 'noreferrer'
+                    item.append(heading, detail, link)
+                    rows.append(item)
+
+                    // TWO consumers of the same id, deliberately: deer#96 says they must
+                    // share one Entity and one round trip.
+                    const primary = getEntity(uri)
+                    const shadow = getEntity(uri)
+                    heading.textContent = primary === shadow ? '(loading)' : '(SHARING FAILED)'
+
+                    const paint = (event) => {
+                        const shaped = event.detail.payload
+                        if (!shaped) { return }
+                        heading.textContent = [shaped.name ?? shaped.label].flat().map(v => v?.value).filter(Boolean).join(', ') || '[ unlabeled ]'
+                        detail.textContent = asserted(shaped)
+                            .filter(([key]) => key !== 'name')
+                            .map(([key, val]) => `${key}: ${[val].flat().map(v => v?.value).join(' | ')}`)
+                            .join('  •  ')
+                    }
+                    teardowns.push(primary.subscribe(paint))
+                    teardowns.push(shadow.subscribe(() => {}))
+                }
+
+                // Let the reads settle before counting them.
+                await new Promise(resolve => setTimeout(resolve, 1200))
+                describe('collectionStats', [
+                    ['Entities found', finds.length],
+                    ['Query requests', queryRequests],
+                    ['Read requests for those entities', log.length - readsStarted],
+                    ['Consumers subscribed', teardowns.length],
+                    ['EntityMap size', EntityMap.size]
+                ])
+                say('collectionStatus', `${teardowns.length} consumers over ${finds.length} entities produced ${log.length - readsStarted} read request(s). One per entity is the deer#96 fix.`, 'ok')
+            } catch (err) {
+                say('collectionStatus', `Collection failed: ${err.message}`, 'error')
+                console.error(err)
+            }
+        })
+
+        /* -------------------------------------------------- 5. inspector */
+
+        let lastFixture = null
+
+        $('inspectGo').addEventListener('click', async () => {
+            const uri = $('inspectTarget').value.trim()
+            if (!uri) { return }
+            say('inspectStatus', 'Fetching...')
+            dump('outRaw', '...')
+            dump('outExpanded', '...')
+            dump('outAnnos', '...')
+            describe('inspectSummary', [])
+            try {
+                // clientRead already returns the raw entity it merged from, so asking
+                // rerum.resolve() for it too would fetch the same document twice and show
+                // a request count this page is supposed to be honest about.
+                const [server, client] = await Promise.all([
+                    rerum.expanded(uri, { fresh: true }),
+                    expand.clientRead(uri, { fresh: true })
+                ])
+
+                dump('outRaw', client.entity)
+                dump('outExpanded', server.document)
+                dump('outAnnos', client.annotations.map(annotation => ({
+                    '@id': rerum.idOf(annotation),
+                    creator: annotation.creator,
+                    generatedBy: annotation.__rerum?.generatedBy,
+                    body: annotation.body ?? annotation.bodyValue
+                })))
+
+                // The question this page exists to answer: does any annotation @id
+                // survive into /expanded?
+                const expandedText = JSON.stringify(server.document)
+                const ids = client.annotations.map(a => rerum.idOf(a))
+                const survivors = ids.filter(id => expandedText.includes(id.replace(/^https?:/, '')))
+
+                describe('inspectSummary', [
+                    ['Annotations-Gathered', server.gathered ?? '(header absent)'],
+                    ['Annotations-Merged', server.merged ?? '(header absent)'],
+                    ['Client read gathered', ids.length],
+                    ['Annotation @ids surviving into /expanded', `${survivors.length} of ${ids.length}`],
+                    ['Server declined', server.gathered === null ? 'unknown' : server.gathered - server.merged]
+                ])
+                lastFixture = { id: uri, raw: client.entity, expanded: server.document, annotations: client.annotations, gathered: server.gathered, merged: server.merged }
+                say('inspectStatus', 'Done.', 'ok')
+            } catch (err) {
+                say('inspectStatus', `Inspect failed: ${err.message}`, 'error')
+                console.error(err)
+            }
+        })
+
+        $('copyFixture').addEventListener('click', async () => {
+            if (!lastFixture) {
+                window.alert('Inspect something first.')
+                return
+            }
+            await navigator.clipboard.writeText(JSON.stringify(lastFixture, null, 2))
+            say('inspectStatus', `Fixture copied for ${lastFixture.id}`, 'ok')
+        })
+
+        /* -------------------------------------------------- 6. delete */
+
+        $('deleteGo').addEventListener('click', async () => {
+            const uri = $('deleteTarget').value.trim()
+            if (!uri) { return }
+            if (!window.confirm(`Delete ${uri}? A deleted record cannot be updated, un-deleted, or deleted again.`)) { return }
+            say('deleteStatus', 'Deleting...')
+            try {
+                // Resolve first so the whole document is passed: deleting an Annotation
+                // has to invalidate the target it names, and the tombstone will not name it.
+                const document_ = await rerum.resolve(uri, { fresh: true })
+                const deleted = await rerum.delete(document_)
+                say('deleteStatus', `Deleted ${deleted}. Its URI and any target it named are marked stale, so the next read of each busts the cache.`, 'ok')
+            } catch (err) {
+                say('deleteStatus', `Delete failed: ${err.message}${err.status ? ` (status ${err.status} — TinyNode reports a refusal from RERUM as a 502)` : ''}`, 'error')
+                console.error(err)
+            }
+        })
+
+        /* -------------------------------------------------- boot */
+
+        renderLog()
+        describe('collectionStats', [['EntityMap size', EntityMap.size]])
+        if (lastCreated) { say('createStatus', `Last created this session: ${lastCreated}`) }
+    </script>
+</body>
+
+</html>

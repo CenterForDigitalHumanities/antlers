@@ -5,7 +5,8 @@
  *
  * Consolidates the fetches behind one surface.
  * Reads go straight to RERUM; writes go through the deployment's TinyNode
- * proxy (config.URLS).
+ * proxy (config.URLS): create, update, overwrite, delete — the names the back
+ * end uses for those actions.
  *
  * This module also owns the cache-mode policy.  A write records every URI it
  * invalidated -- the document itself, and for an Annotation every entity it
@@ -26,7 +27,7 @@ const fetcher = (...args) => (config.fetch ?? globalThis.fetch)(...args)
 const staleIds = new Map()
 
 /**
- * How long a write's invalidation is honored.  
+ * How long a write's invalidation is honored.
  * RERUM sends `Cache-Control: max-age=86400, must-revalidate`.
  *
  * `GET /v1/id/:_id` and its `/expanded` merge.  That is the window.
@@ -261,6 +262,11 @@ async function handleResponse(response) {
 /**
  * GET a single document by URI.
  *
+ * RERUM-only, like every other read here.  DEER refuses foreign URIs rather
+ * than degrading, and this is the module's public network surface — leaving the
+ * one read ungated made the boundary depend on which caller you arrived
+ * through.
+ *
  * @param {String|Object} id the document URI (or an object carrying one).
  * @param {Object} options `fresh: true` busts the HTTP cache.  A read that
  * follows a write of this URI busts it automatically.
@@ -270,6 +276,9 @@ async function handleResponse(response) {
  */
 export async function resolve(id, { fresh = false } = {}) {
     const uri = canonicalId(idOf(id))
+    if (!isRerumId(uri)) {
+        throw new TypeError(`${uri} is not a RERUM document id, and DEER reads RERUM documents only. Ids must be bare URIs on config.ID_BASES (currently ${JSON.stringify(config.ID_BASES)}) — no query string, no fragment, no trailing slash.`)
+    }
     const reload = needsReload(uri, uri) || fresh
     const response = await fetcher(uri, reload ? { cache: "reload" } : {})
     const document = await handleResponse(response)
@@ -390,6 +399,19 @@ export function overwrite(obj) {
  * An un-busted cache would keep serving the live document.  A
  * deleted record cannot be updated, un-deleted, or deleted a second time.
  *
+ * Exported as `delete`, which is what the back end calls the action, so this
+ * module's write surface reads create / update / overwrite / delete.  `delete`
+ * is a reserved word, so the DECLARATION has to carry another name and the
+ * export is aliased below — that constrains importers, not callers:
+ *
+ * ```javascript
+ * import * as rerum from './rerum.js'
+ * await rerum.delete(doc)                        // fine
+ *
+ * import { delete } from './rerum.js'            // SyntaxError — reserved word
+ * import { delete as deleteDoc } from './rerum.js'   // alias it instead
+ * ```
+ *
  * @param {String|Object} entity the document URI, or a document carrying one.
  * Pass the whole document when you have it — deleting an Annotation changes the
  * `/expanded` merge of its target, and the target can only be invalidated from
@@ -399,7 +421,7 @@ export function overwrite(obj) {
  * @throws {Error} carrying TinyNode's `status`, which is TinyNode's own: it
  * reports a refusal from RERUM as a 502.
  */
-export async function remove(entity) {
+async function deleteDocument(entity) {
     const uri = canonicalId(idOf(entity))
     const recordId = isRerumId(uri) ? uri.slice(uri.lastIndexOf("/") + 1) : ""
     if (recordId === "") {
@@ -424,3 +446,6 @@ export async function remove(entity) {
     markStale(uri, entity, entity?.target)
     return uri
 }
+
+// The one export that cannot be declared under its own name.
+export { deleteDocument as delete }

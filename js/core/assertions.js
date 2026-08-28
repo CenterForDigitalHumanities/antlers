@@ -63,7 +63,7 @@ const ANNOTATION_TYPES = new Set([
 
 /**
  * Accepts a string, an array of strings, or an array whose members are
- * themselves arrays 
+ * themselves arrays
  *
  * @param {String|Array} typeValue the document's type or @type, or both.
  * @returns {Boolean}
@@ -113,8 +113,9 @@ export function requireDocument(doc, context = "This read") {
 export function buildValueObject(val, fromAnno = {}) {
     if (val !== null && typeof val === "object" && SHAPED.has(val)) { return val }
     // An empty string is a value someone chose, not a missing one such as a field
-    // a user deliberately cleared.
-    const value = (val === "") ? "" : getValue(val)
+    // a user deliberately cleared.  getValue agrees, so no special case is needed
+    // here — the two used to disagree, and a cleared field was lost between them.
+    const value = getValue(val)
     const valueObject = {
         source: { citationSource: fromAnno["@id"] ?? fromAnno.id },
         value,
@@ -228,7 +229,7 @@ export function applyAssertions(entity, annotations = []) {
     // A deleted record accepts no assertions.
     if (Object.hasOwn(assertOn, "__deleted")) { return shapeValues(assertOn) }
     for (const anno of inAssertionOrder(annotations)) {
-        // An annotation with no id has no citationSource to contribute 
+        // An annotation with no id has no citationSource to contribute
         const annoId = anno?.["@id"] ?? anno?.id
         if (annoId === undefined || annoId === null) { continue }
         // A superseded annotation asserts nothing.

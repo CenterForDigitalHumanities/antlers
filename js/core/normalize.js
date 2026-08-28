@@ -58,10 +58,16 @@ function castValue(prop, asType) {
  * array.  The member rule does not depend on whether a cast was requested —
  * a return SHAPE that changed with `asType` was an accident waiting for
  * template bindings.
+ *
+ * An empty string is a VALUE, not a missing one — a field a user deliberately
+ * cleared reads back as "".  0.11 returned undefined for it here while
+ * buildValueObject preserved it, so a cleared field survived shaping and then
+ * vanished the moment a template binding normalized it.  Only null and
+ * undefined are missing.
  */
 export function getValue(property, alsoPeek = [], asType) {
     let prop
-    if (property === undefined || property === null || property === "") {
+    if (property === undefined || property === null) {
         if (config.DEBUG) { console.warn("Value of property to lookup is missing!") }
         return undefined
     }
@@ -90,6 +96,10 @@ export function getValue(property, alsoPeek = [], asType) {
 /**
  * Attempt to discover a readable label from the object.
  *
+ * Nullish coalescing throughout, not `||`: a label of 0 or "" is a label
+ * someone chose.  `||` reported both as unlabeled, which is the same falsy-vs-
+ * missing confusion getValue carried for the empty string.
+ *
  * @param {any} obj the object to label.
  * @param {String} noLabel fallback when no label is discoverable.
  * @param {Object} options `options.label` names a preferred label property.
@@ -98,13 +108,13 @@ export function getValue(property, alsoPeek = [], asType) {
 export function getLabel(obj, noLabel = "[ unlabeled ]", options = {}) {
     if (obj === undefined || obj === null) { return noLabel }
     if (typeof obj === "string") { return obj }
-    let label = obj[options.label] || obj.name || obj.label || obj.title
+    let label = obj[options.label] ?? obj.name ?? obj.label ?? obj.title
     if (Array.isArray(label)) {
         label = [...new Set(label.map(l => getValue(l)))]
         return label.length ? label : noLabel
     }
-    if (typeof label === "object") {
+    if (label !== null && typeof label === "object") {
         label = getValue(label)
     }
-    return label || noLabel
+    return label ?? noLabel
 }
