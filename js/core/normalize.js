@@ -108,7 +108,8 @@ export function getValue(property, alsoPeek = [], asType) {
 export function getLabel(obj, noLabel = "[ unlabeled ]", options = {}) {
     if (obj === undefined || obj === null) { return noLabel }
     if (typeof obj === "string") { return obj }
-    let label = obj[options.label] ?? obj.name ?? obj.label ?? obj.title
+    let label = (options.label === undefined ? undefined : obj[options.label])
+        ?? obj.name ?? obj.label ?? obj.title
     if (Array.isArray(label)) {
         label = [...new Set(label.map(l => getValue(l)))]
         return label.length ? label : noLabel

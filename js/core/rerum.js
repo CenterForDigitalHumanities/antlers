@@ -132,7 +132,7 @@ function requireGenerator() {
     }
     else if (proxyWarnedFor !== config.GENERATOR && stillShipped.length > 0) {
         proxyWarnedFor = config.GENERATOR
-        console.warn(`config.GENERATOR is repointed but config.URLS.${stillShipped.join("/")} still point at the shipped sandbox proxy, which writes with its OWN agent. Every record you create will be generatedBy ${SHIPPED_GENERATOR} and filtered back out of every read — writes succeed, reads come back empty. Repoint URLS at your own TinyNode deployment.`)
+        console.warn(`config.GENERATOR is repointed but config.URLS.${stillShipped.join("/")} still point at the shipped sandbox proxy, which uses a shared agent. Every record you create will be generatedBy ${SHIPPED_GENERATOR} and filtered back out of every read — writes succeed, reads come back empty. Repoint URLS at your own TinyNode deployment.`)
     }
     return config.GENERATOR
 }
@@ -177,9 +177,13 @@ export function isRerumId(id) {
  *
  * @param {String} url the configured URL, absolute or relative.
  * @returns {String} the absolute URL.
- * @throws {TypeError} when a relative URL has no base to resolve against.
+ * @throws {TypeError} when the URL is missing, or when a relative one has no
+ * base to resolve against.
  */
 function absoluteUrl(url) {
+    if (typeof url !== "string" || url.length === 0) {
+        throw new TypeError(`A config.URLS entry is missing or is not a URL string (got ${JSON.stringify(url)}).`)
+    }
     const base = config.BASE ?? globalThis.document?.baseURI ?? globalThis.location?.href
     try {
         return new URL(url, base).toString()

@@ -68,8 +68,11 @@
             <p class="hint">
                 The client's targeting query mirrors the server's <code>findLeafAnnotationsFor</code>
                 (<code>rerum_server_nodejs/controllers/utils.js</code>), and nothing imports one into the
-                other — the two lists are kept in step by hand. This compares the predicates
-                <code>expand.clientRead()</code> actually sends against a transcription of the server's.
+                other — the lists are kept in step by hand. This compares the predicates
+                <code>expand.clientRead()</code> actually sends against a transcription of the server's,
+                and the two constant lists <code>assertions.js</code> mirrors — the protected keys and
+                the <code>TextualBody</code> spellings — against theirs. Drift in those does not produce
+                an error; it produces two read paths that disagree about which key a value lives under.
                 It runs at load and issues no requests.
             </p>
             <div class="verdict" id="mirrorVerdict"></div>
@@ -353,7 +356,7 @@
         import * as rerum from '/js/core/rerum.js'
         import * as expand from '/js/core/expand.js'
         import { getEntity, reserveEditing, clearEntities, EntityMap } from '/js/core/entity.js'
-        import { IDENTITY_KEYS } from '/js/core/assertions.js'
+        import { IDENTITY_KEYS, FORBIDDEN_KEYS, TEXTUAL_BODY_TYPES } from '/js/core/assertions.js'
 
         const TAG = 'ANTLERS_2_0_TEST_AGENT'
         const COLLECTION = 'AntlersTestPeople'
@@ -481,6 +484,45 @@
             return { targets, types, filters }
         }
 
+        /**
+         * The other two server lists js/core mirrors by hand, transcribed the same way.
+         * PROTECTED_EXPANSION_KEYS is rerum_server_nodejs/controllers/utils.js;
+         * the TextualBody spellings are controllers/crud.js.
+         */
+        const SERVER_PROTECTED_KEYS = ['@id', 'id', '_id', '__rerum', '__deleted', '__proto__', '@context', 'type', '@type']
+        const SERVER_TEXTUAL_BODY_TYPES = ['TextualBody', 'oa:TextualBody',
+            'http://www.w3.org/ns/oa#TextualBody', 'https://www.w3.org/ns/oa#TextualBody']
+
+        /**
+         * The client must refuse at least every key the server refuses.  Refusing MORE is
+         * safe — shapeValues runs on both read paths, so a client-only key is dropped from
+         * both.  Refusing FEWER is a divergence: the editing path would merge a key the
+         * server drops from the display one.
+         */
+        function checkProtectedKeyMirror() {
+            const mine = new Set([...IDENTITY_KEYS, ...FORBIDDEN_KEYS])
+            const missing = SERVER_PROTECTED_KEYS.filter(key => !mine.has(key))
+            const stricterBy = [...mine].filter(key => !SERVER_PROTECTED_KEYS.includes(key))
+            const detail = missing.length
+                ? `${missing.length} the server refuses and DEER does not: ${missing.join(', ')}`
+                : `${SERVER_PROTECTED_KEYS.length} keys${stricterBy.length ? `, DEER stricter by ${stricterBy.join(', ')}` : ''}`
+            return [`Protected keys cover the server's — ${detail}`, missing.length === 0]
+        }
+
+        /**
+         * Exact, both ways.  A spelling only one side folds whole lands the value under a
+         * different KEY on the two read paths, which no value comparison would catch.
+         */
+        function checkTextualBodyMirror() {
+            const mine = new Set(TEXTUAL_BODY_TYPES)
+            const theirs = new Set(SERVER_TEXTUAL_BODY_TYPES)
+            const missing = [...theirs].filter(one => !mine.has(one))
+            const extra = [...mine].filter(one => !theirs.has(one))
+            const matched = sameSet(mine, theirs)
+            const detail = matched ? `${theirs.size} spellings` : `${missing.length} missing, ${extra.length} unmatched`
+            return [`TextualBody spellings match the server — ${detail}`, matched]
+        }
+
         /** A clause list flattened to comparable `key=value` / `key~pattern` predicates. */
         function predicatesOf(clauses) {
             const out = new Set()
@@ -542,7 +584,9 @@
             verdict('mirrorVerdict', [
                 compare('Targeting predicates match the server', client.$and[0].$or, server.targets),
                 compare('Annotation-type clauses match the server', client.$and[1].$or, server.types),
-                compare('Generator and leaf-version filters match the server', clientFilters, server.filters)
+                compare('Generator and leaf-version filters match the server', clientFilters, server.filters),
+                checkProtectedKeyMirror(),
+                checkTextualBodyMirror()
             ])
         }
 

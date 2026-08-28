@@ -47,7 +47,7 @@ const config = {
     // borrow outside one — so a host with no document MUST set this.
     BASE: undefined,
 
-    // Query paging defaults
+    // Query paging defaults.  Integers, always — see INTEGER_DEFAULTS.
     // LIMIT must be 500 or less
     LIMIT: 50,
     SKIP: 0,
@@ -64,15 +64,37 @@ const config = {
 }
 
 /**
+ * The config values that are counts, and what each falls back to.
+ */
+const INTEGER_DEFAULTS = Object.freeze({ LIMIT: 50, SKIP: 0, MAX_RESULTS: 1000 })
+
+/**
+ * A config count, always an integer.  A fraction drops its decimal; anything
+ * that is not a finite number is the shipped default.
+ *
+ * @param {any} value the configured value.
+ * @param {Number} fallback the default for this key.
+ * @returns {Number} an integer.
+ */
+function asInteger(value, fallback) {
+    const number = (typeof value === "string") ? Number(value) : value
+    return (typeof number === "number" && Number.isFinite(number)) ? Math.trunc(number) : fallback
+}
+
+/**
  * Merge deployment overrides into the shipped defaults.
  *
  * @param {Object} overrides partial config; URLS merges key-by-key, ID_BASES
- * replaces wholesale and is normalized to trailing-slash, https form.
+ * replaces wholesale and is normalized to trailing-slash, https form, and every
+ * count in INTEGER_DEFAULTS is normalized to an integer or to its default.
  * @returns {Object} the live config object.
  */
 export function configure(overrides = {}) {
     const { URLS, ID_BASES, ...rest } = overrides
     if (URLS) { Object.assign(config.URLS, URLS) }
+    for (const [key, fallback] of Object.entries(INTEGER_DEFAULTS)) {
+        if (Object.hasOwn(rest, key)) { rest[key] = asInteger(rest[key], fallback) }
+    }
     if (ID_BASES) {
         config.ID_BASES = ID_BASES.map(base => {
             if (typeof base !== "string" || base.length === 0) {

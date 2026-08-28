@@ -125,8 +125,9 @@ export function buildValueObject(val, fromAnno = {}) {
     // An empty string is a value someone chose, not a missing one such as a field
     // a user deliberately cleared.
     const value = getValue(val)
+    const citationSource = fromAnno["@id"] ?? fromAnno.id
     const valueObject = {
-        source: { citationSource: fromAnno["@id"] ?? fromAnno.id },
+        source: (citationSource === undefined || citationSource === null) ? {} : { citationSource },
         value,
         evidence: fromAnno.evidence ?? ""
     }

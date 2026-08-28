@@ -675,7 +675,13 @@ class Entity extends EventTarget {
      * @returns {Function} call to detach.
      */
     #listen = (handler) => {
-        const call = (ev) => (typeof handler === "function") ? handler(ev) : handler.handleEvent(ev)
+        const call = (ev) => {
+            try {
+                return (typeof handler === "function") ? handler(ev) : handler.handleEvent(ev)
+            } catch (err) {
+                console.error(`${this.id}: a subscriber threw while being caught up on '${ev.detail.action}'.`, err)
+            }
+        }
         for (const action of LIFECYCLE) { this.addEventListener(action, handler) }
         if (this.settled) {
             if (this.error === undefined) {
