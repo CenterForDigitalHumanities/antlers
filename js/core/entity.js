@@ -302,10 +302,12 @@ class Entity extends EventTarget {
 
     /**
      * The annotations held against this Entity, keyed by version-chain root.
+     * A COPY of the internal map — mutating it changes nothing here, so it
+     * cannot empty or corrupt what the Entity holds behind the announce path.
      * Empty on the display strategy by design — see attachAnnotation.
      */
     get Annotations() {
-        return this.#adopted?.Annotations ?? this.#annotations
+        return this.#adopted?.Annotations ?? new Map(this.#annotations)
     }
 
     /** "display" or "editing" — which read path resolves this Entity. */
@@ -655,7 +657,10 @@ class Entity extends EventTarget {
                 this.#stopForwarding?.()
                 this.#stopForwarding = undefined
             }
-            const owner = this.#adopted ?? this
+            // Walk to the terminal owner: the adoption chain may have grown
+            // another link since this teardown was created.
+            let owner = this.#adopted ?? this
+            while (owner.#adopted !== undefined) { owner = owner.#adopted }
             owner.#subscribers--
             if (owner.#subscribers === 0) { owner.#release() }
         }
@@ -682,7 +687,9 @@ class Entity extends EventTarget {
                 console.error(`${this.id}: a subscriber threw while being caught up on '${ev.detail.action}'.`, err)
             }
         }
-        for (const action of LIFECYCLE) { this.addEventListener(action, handler) }
+        // A per-subscription closure
+        const live = (ev) => (typeof handler === "function") ? handler(ev) : handler.handleEvent(ev)
+        for (const action of LIFECYCLE) { this.addEventListener(action, live) }
         if (this.settled) {
             if (this.error === undefined) {
                 call(this.#event("update", this.assertions))
@@ -693,7 +700,7 @@ class Entity extends EventTarget {
                 call(this.#event("error", this.error))
             }
         }
-        return () => { for (const action of LIFECYCLE) { this.removeEventListener(action, handler) } }
+        return () => { for (const action of LIFECYCLE) { this.removeEventListener(action, live) } }
     }
 
     /**

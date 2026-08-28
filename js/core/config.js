@@ -77,7 +77,7 @@ const INTEGER_DEFAULTS = Object.freeze({ LIMIT: 50, SKIP: 0, MAX_RESULTS: 1000 }
  * @returns {Number} an integer.
  */
 function asInteger(value, fallback) {
-    const number = (typeof value === "string") ? Number(value) : value
+    const number = (typeof value === "string" && value.trim() !== "") ? Number(value) : value
     return (typeof number === "number" && Number.isFinite(number)) ? Math.trunc(number) : fallback
 }
 
@@ -85,25 +85,31 @@ function asInteger(value, fallback) {
  * Merge deployment overrides into the shipped defaults.
  *
  * @param {Object} overrides partial config; URLS merges key-by-key, ID_BASES
- * replaces wholesale and is normalized to trailing-slash, https form, and every
- * count in INTEGER_DEFAULTS is normalized to an integer or to its default.
+ * replaces wholesale and is normalized to trailing-slash https form as the URL
+ * parser spells it.
  * @returns {Object} the live config object.
+ * @throws {TypeError} when an ID_BASES member is not a non-empty absolute URL string.
  */
 export function configure(overrides = {}) {
     const { URLS, ID_BASES, ...rest } = overrides
-    if (URLS) { Object.assign(config.URLS, URLS) }
+    const normalizedBases = ID_BASES?.map(base => {
+        if (typeof base !== "string" || base.length === 0) {
+            throw new TypeError(`config.ID_BASES members must be non-empty URI prefix strings, and got ${JSON.stringify(base)}. ID_BASES is the support boundary — it decides which URIs DEER will read at all.`)
+        }
+        const https = base.replace(/^http:/, "https:")
+        let href
+        try {
+            href = new URL(https).href
+        } catch (err) {
+            throw new TypeError(`config.ID_BASES member ${JSON.stringify(base)} is not an absolute URL, so no id could ever sit on it. ID_BASES is the support boundary — it decides which URIs DEER will read at all.`, { cause: err })
+        }
+        return href.endsWith("/") ? href : `${href}/`
+    })
     for (const [key, fallback] of Object.entries(INTEGER_DEFAULTS)) {
         if (Object.hasOwn(rest, key)) { rest[key] = asInteger(rest[key], fallback) }
     }
-    if (ID_BASES) {
-        config.ID_BASES = ID_BASES.map(base => {
-            if (typeof base !== "string" || base.length === 0) {
-                throw new TypeError(`config.ID_BASES members must be non-empty URI prefix strings, and got ${JSON.stringify(base)}. ID_BASES is the support boundary — it decides which URIs DEER will read at all.`)
-            }
-            const https = base.replace(/^http:/, "https:")
-            return https.endsWith("/") ? https : `${https}/`
-        })
-    }
+    if (URLS) { Object.assign(config.URLS, URLS) }
+    if (normalizedBases) { config.ID_BASES = normalizedBases }
     Object.assign(config, rest)
     return config
 }
