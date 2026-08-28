@@ -10,20 +10,24 @@
 /**
  * The agent the shipped default writes with — the SHARED public sandbox agent.
  * Exported so rerum.js can tell "this deployment chose the sandbox agent" from
- * "this deployment never set one", which config.GENERATOR alone cannot answer
- * once configure() has run.  A deployment that reaches production still using
- * it is reading every other such deployment's annotations.
+ * "this deployment never set one".
  */
 export const SHIPPED_GENERATOR = "https://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
 
+/**
+ * The proxy the shipped default writes through — the SHARED public sandbox.
+ * GENERATOR and URLS are ONE unified decision.
+ */
+export const SHIPPED_URLS = Object.freeze({
+    CREATE: "https://tinydev.rerum.io/create",
+    UPDATE: "https://tinydev.rerum.io/update",
+    OVERWRITE: "https://tinydev.rerum.io/overwrite",
+    DELETE: "https://tinydev.rerum.io/delete",
+    QUERY: "https://tinydev.rerum.io/query"
+})
+
 const config = {
-    URLS: {
-        CREATE: "https://tinydev.rerum.io/create",
-        UPDATE: "https://tinydev.rerum.io/update",
-        OVERWRITE: "https://tinydev.rerum.io/overwrite",
-        DELETE: "https://tinydev.rerum.io/delete",
-        QUERY: "https://tinydev.rerum.io/query"
-    },
+    URLS: { ...SHIPPED_URLS },
 
     // URI prefixes that mark an id as RERUM-hosted.  DEER reads and writes RERUM
     // entities only, so this is the support boundary: an id outside these bases
@@ -43,6 +47,7 @@ const config = {
     BASE: undefined,
 
     // Query paging defaults
+    // LIMIT must be 500 or less
     LIMIT: 50,
     SKIP: 0,
 

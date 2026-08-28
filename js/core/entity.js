@@ -12,7 +12,7 @@ import * as rerum from './rerum.js'
 import * as expand from './expand.js'
 import { applyAssertions, markShaped, shapeValues } from './assertions.js'
 
-const EntityMap = new Map()
+const entityMap = new Map()
 
 /**
  * Ids declared as needing the editing read before anything constructs an Entity
@@ -32,6 +32,19 @@ const keyOf = (id) => rerum.canonicalId((typeof id === "string") ? id : id?.["@i
  * @returns {String|undefined} the canonical slug URI, or undefined without one.
  */
 const slugAliasOf = (doc) => rerum.canonicalId(rerum.slugUriOf(doc))
+
+/**
+ * The identity map as consumers see it: readable, not writable.
+ *
+ * Its keys are maintained in step with each Entity's own `#mapKeys` bookkeeping
+ * by #register / #release / #adopt, and the two halves have to agree.
+ */
+const EntityMap = Object.freeze({
+    get size() { return entityMap.size },
+    get: (id) => entityMap.get(keyOf(id)),
+    has: (id) => entityMap.has(keyOf(id)),
+    keys: () => entityMap.keys()
+})
 
 /** The events an Entity announces over its lifetime. */
 const LIFECYCLE = ["update", "reload", "complete", "error"]
@@ -132,7 +145,7 @@ function reserveEditing(...ids) {
         editingIds.add(key)
         // Not awaited: reserving is a declaration, not a read.  resolve() never
         // rejects — a failure lands on the Entity as an `error` event.
-        const existing = EntityMap.get(key)
+        const existing = entityMap.get(key)
         if (existing !== undefined && existing.strategy !== "editing") { existing.upgradeToEditing() }
     }
     return reserved
@@ -141,12 +154,6 @@ function reserveEditing(...ids) {
 /**
  * The shared way to obtain an Entity: returns the one already coordinating a
  * given id, or constructs (and begins resolving) a new one.
- *
- * EVERY caller owes a teardown, because the map holds what it hands out: the
- * function subscribe() returns if you subscribed, Entity#release() if you did
- * not.  A read that takes an Entity and never gives it back keeps the document,
- * the frozen assertions memo and every annotation behind it for the life of the
- * page.
  *
  * @param {String|Object} id the entity URI or an object carrying one.
  * @param {Object} options
@@ -164,7 +171,7 @@ function getEntity(id, { strategy = "display", upgrade = true } = {}) {
     // Refused here rather than left to the constructor, so all three ways of
     // arriving without an id fail identically.
     if (typeof key !== "string" || key.length === 0) { throw new Error("Entity must have an id") }
-    const existing = EntityMap.get(key)
+    const existing = entityMap.get(key)
     if (existing) {
         // An editing consumer must upgrade a display Entity — being handed one silently
         // is how a form loses its create-vs-update trigger
@@ -192,8 +199,8 @@ function getEntity(id, { strategy = "display", upgrade = true } = {}) {
  *
  */
 function clearEntities() {
-    for (const held of new Set(EntityMap.values())) { held.retire() }
-    EntityMap.clear()
+    for (const held of new Set(entityMap.values())) { held.retire() }
+    entityMap.clear()
     editingIds.clear()
     rerum.clearStale()
     expand.clearWarnings()
@@ -285,7 +292,7 @@ class Entity extends EventTarget {
         }
         const id = entity["@id"] ?? entity.id // @id is primary key
         if (typeof id !== "string" || id.length === 0) { throw new Error("Entity must have an id") }
-        if (EntityMap.has(rerum.canonicalId(id))) { throw new Error(`Entity ${id} already exists. Use getEntity() to share it.`) }
+        if (entityMap.has(rerum.canonicalId(id))) { throw new Error(`Entity ${id} already exists. Use getEntity() to share it.`) }
         this.#annotations = new Map()
         this.#strategy = (strategy === "editing") ? "editing" : "display"
         this.#id = id
@@ -330,10 +337,7 @@ class Entity extends EventTarget {
     /**
      * The RERUM document this Entity holds, RAW on both strategies — the entity
      * as `GET /v1/id/:_id` returned it on the editing path, the merged document
-     * as `/expanded` returned it on the display one.  Never DEER-shaped: the
-     * shape of a public read must not depend on which strategy an Entity
-     * happens to be on, or an element renders `"Ada"` or `{value:"Ada"}`
-     * depending on whether a form elsewhere on the page reserved the id.
+     * as `/expanded` returned it on the display one.  Never DEER-shaped.
      *
      * Read `assertions` for the shaped view.
      */
@@ -409,7 +413,7 @@ class Entity extends EventTarget {
         const oldId = this.#id
         const nextId = candidate["@id"] ?? candidate.id ?? oldId
         const canonical = rerum.canonicalId(nextId)
-        const incumbent = EntityMap.get(canonical)
+        const incumbent = entityMap.get(canonical)
         if (incumbent !== undefined && incumbent !== this) {
             this.#adopt(incumbent)
             return
@@ -452,11 +456,9 @@ class Entity extends EventTarget {
      */
     #register = (key) => {
         this.#mapKeys.add(key)
-        // A released Entity must not re-claim map slots.  Neither unsubscribing
-        // nor release() cancels an in-flight read, so its result still lands
-        // here afterwards and must not put the Entity back in the map.
+        // A released Entity must not re-claim map slots.
         if (this.#everSubscribed && this.#subscribers === 0) { return }
-        EntityMap.set(key, this)
+        entityMap.set(key, this)
     }
 
     /**
@@ -473,7 +475,7 @@ class Entity extends EventTarget {
         // was constructed with (the Slug, typically) must reach the survivor.
         // The incumbent takes ownership so its own #release gives them back.
         for (const key of this.#mapKeys) {
-            if (EntityMap.get(key) === this) { EntityMap.set(key, incumbent) }
+            if (entityMap.get(key) === this) { entityMap.set(key, incumbent) }
             incumbent.#mapKeys.add(key)
         }
         this.#mapKeys.clear()
@@ -513,7 +515,7 @@ class Entity extends EventTarget {
      */
     #release = () => {
         for (const key of this.#mapKeys) {
-            if (EntityMap.get(key) === this) { EntityMap.delete(key) }
+            if (entityMap.get(key) === this) { entityMap.delete(key) }
         }
         // #mapKeys is kept, not cleared: #reclaim restores the keys that are
         // still free if this Entity is subscribed to again, which is the
@@ -531,14 +533,14 @@ class Entity extends EventTarget {
      */
     #reclaim = () => {
         for (const key of this.#mapKeys) {
-            const holder = EntityMap.get(key)
+            const holder = entityMap.get(key)
             if (holder !== undefined && holder !== this) {
                 this.#adopt(holder)
                 return
             }
         }
         for (const key of this.#mapKeys) {
-            if (!EntityMap.has(key)) { EntityMap.set(key, this) }
+            if (!entityMap.has(key)) { entityMap.set(key, this) }
         }
     }
 
@@ -603,20 +605,6 @@ class Entity extends EventTarget {
     /**
      * Give up this Entity's EntityMap keys.
      *
-     * subscribe() returns a teardown and the map drains when the last
-     * subscriber leaves, which covers every consumer that renders.  A consumer
-     * that never subscribes — a script, a probe, a one-shot read — has no
-     * teardown to call, and #register only withholds a map slot from an Entity
-     * that HAS been subscribed to, because an Entity has to be in the map
-     * during construction for getEntity() to dedupe it.  So without this the
-     * un-subscribed case pins the Entity, its document, its frozen assertions
-     * memo and every annotation behind it for the life of the page, with
-     * clearEntities() -- which drops every Entity -- as the only exit.
-     *
-     * This is that teardown.  A no-op while anything is still listening: those
-     * subscribers own the drain, and taking the keys out from under them would
-     * cost the next consumer a duplicate read of a record already in hand.
-     *
      * The Entity keeps working afterwards.  Whoever holds a reference can
      * resolve() and subscribe() again; subscribing re-enters the map through
      * #reclaim, or defers to whoever claimed the record meanwhile.
@@ -624,9 +612,6 @@ class Entity extends EventTarget {
     release() {
         if (this.#adopted !== undefined) { this.#adopted.release(); return }
         if (this.#subscribers > 0) { return }
-        // Latching this is what makes the release stick: #register consults it
-        // to refuse a map slot to an Entity that has been let go, so a read
-        // still in flight cannot quietly re-register on arrival.
         this.#everSubscribed = true
         this.#release()
     }
@@ -805,10 +790,6 @@ class Entity extends EventTarget {
         this.#error = undefined
         try {
             if (strategy === "display") {
-                // RAW, not forDisplay(): #data holds the document a read handed
-                // over, and it must be a RERUM document on both strategies.  The
-                // shaping the display path needs happens in `assertions`, which
-                // already does it.
                 const resolved = await expand.forDisplayRaw(this.#id, { fresh })
                 if (generation !== this.#generation) { return }
                 this.#dataStrategy = strategy
@@ -862,10 +843,7 @@ class Entity extends EventTarget {
 
 /**
  * An object describing a document related to the URI it targets.  Constructing
- * one attaches it to every Entity it targets (self-wiring). An annotation 
- * attaches itself to every target the page is already coordinating, 
- * so an annotation returned by one entity's read reaches the other entities 
- * on the page that it also asserts about.
+ * one attaches it to every Entity it targets (self-wiring).
  *
  * @class
  */
@@ -897,7 +875,7 @@ class Annotation {
             // A target outside RERUM, or one carrying a fragment, simply finds
             // no holder — the map is keyed by canonical RERUM URIs — so it needs
             // no gate of its own now that nothing is constructed here.
-            const held = EntityMap.get(rerum.canonicalId(target))
+            const held = entityMap.get(rerum.canonicalId(target))
             if (held === undefined) { continue }
             held.attachAnnotation(this)
         }

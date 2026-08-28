@@ -73,14 +73,7 @@ export function isAnnotationType(typeValue) {
 
 /**
  * The same type list as query clauses, for a Mongo-style `$or`.  Nothing but an
- * Annotation asserts anything, so a read that leaves this off fetches documents
- * it can only discard — and expand.queryAll counts them against
- * config.MAX_RESULTS, so enough of them refuse a read the server merges fine.
- *
- * Mirrors the server's own `annoTypeConditions`: each spelling under both `type`
- * and `@type`.  A Mongo equality match on a scalar also matches an Array
- * containing it, so a JSON-LD Array-serialized type is covered without a clause
- * of its own — the same way isAnnotationType's flat() covers it client-side.
+ * Annotation asserts anything.
  *
  * @returns {Array<Object>} clauses for a Mongo-style `$or`.
  */
@@ -232,27 +225,21 @@ export function shapeValues(obj) {
  * This is the client's port of the server's `applyExpansionAnnotations`, and
  * with `provenance: false` it produces the same kind of document `/expanded`
  * returns: raw merged values, no `{value, source, evidence}` wrapper anywhere.
- * That is what lets a display read store one document shape whichever path
- * produced it.
  *
  * @param {Object} entity the resolved entity document, RAW — pass the fetched
  * document, never an already-shaped one.
  * @param {Array<Object>} annotations annotation documents targeting the entity,
  * already filtered to this deployment's.
  * @param {Object} options `provenance` (default true) wraps each merged value in
- * a value object carrying `source.citationSource` — the asserting annotation's
- * `@id`, which is what keeps the create-vs-update trigger working on the editing
- * path.  Pass false for a display-strategy merge, which has no provenance to
- * carry and must not invent any.
+ * a value object carrying `source.citationSource`. Pass false for a display-strategy
+ * merge.
  * @returns {Object} a new object with the assertions applied.  Not shaped.
  */
 export function mergeAssertions(entity, annotations = [], { provenance = true } = {}) {
     const assertOn = structuredClone(requireDocument(entity, "mergeAssertions"))
     // A deleted record accepts no assertions.
     if (Object.hasOwn(assertOn, "__deleted")) { return assertOn }
-    // Without provenance there is nothing for a value object to carry that
-    // shapeValues will not supply later, so the raw value is merged as-is —
-    // exactly what the server hands back.
+    // The raw value is merged as-is — exactly what the server hands back.
     const contribute = provenance
         ? (val, anno) => buildValueObject(val, anno)
         : (val) => val
@@ -295,9 +282,7 @@ export function mergeAssertions(entity, annotations = [], { provenance = true } 
             if (config.DEBUG) { console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts identity key '${key}'; ignoring.`) }
             continue
         }
-        // A null or undefined member is merged RAW either way and dropped later
-        // by shapeValues.  Skipping it here instead would leave a scalar where
-        // the server produces a one-element array.
+        // A null or undefined member is merged RAW either way and dropped later by shapeValues.
         const shapeOne = (one) => (one === undefined || one === null) ? one : contribute(one, anno)
         mergeAssertion(assertOn, key, Array.isArray(val) ? val.map(shapeOne) : shapeOne(val))
     }
@@ -326,8 +311,7 @@ export function applyAssertions(entity, annotations = []) {
  *
  * @param {Object} target the document being merged onto, mutated in place.
  * @param {String} key the property the annotation asserts.
- * @param {any} contributed the contributed value, or an array of them — a value
- * object on the editing path, the raw asserted value on the display one.
+ * @param {any} contributed the contributed value, or an array of them.
  */
 function mergeAssertion(target, key, contributed) {
     if (!Object.hasOwn(target, key)) {

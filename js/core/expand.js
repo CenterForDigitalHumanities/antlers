@@ -123,6 +123,28 @@ function targetingClauses(uri) {
 }
 
 /**
+ * The one query both client reads issue: every leaf Annotation this deployment
+ * wrote against any URI the record answers to.
+ *
+ * The client's mirror of the server's findLeafAnnotationsFor.
+ *
+ * @param {Array<String>} uris every URI to match as a target.
+ * @returns {Object} the query document.
+ * @throws {TypeError} when no generator is configured.
+ */
+function targetingQuery(uris) {
+    return {
+        "$and": [
+            { "$or": uris.flatMap(targetingClauses) },
+            // Nothing but an Annotation asserts anything.
+            { "$or": annotationTypeClauses() }
+        ],
+        "__rerum.generatedBy": rerum.generatedBy(),
+        "__rerum.history.next": { "$exists": true, "$size": 0 }
+    }
+}
+
+/**
  * The client read path: an entity document and the Annotation documents
  * targeting it, RAW.
  *
@@ -141,21 +163,12 @@ function targetingClauses(uri) {
 export async function clientRead(id, { fresh = false } = {}) {
     const uri = rerum.idOf(id)
     requireRerumId(uri)
+    // An unconfigured generator must refuse this read without leaving the entity GET in flight.
+    const annotationQuery = targetingQuery([uri])
     // Both reads are independent, so neither waits on the other.
-    const generatedBy = rerum.generatedBy()
     const [resolved, list] = await Promise.all([
         rerum.resolve(uri, { fresh }),
-        queryAll({
-            "$and": [
-                { "$or": targetingClauses(uri) },
-                // Nothing but an Annotation asserts anything, so the type filter
-                // belongs in the query the way the server puts it there, not in a
-                // client-side pass over documents already paid for.
-                { "$or": annotationTypeClauses() }
-            ],
-            "__rerum.generatedBy": generatedBy,
-            "__rerum.history.next": { "$exists": true, "$size": 0 }
-        }, uri)
+        queryAll(annotationQuery, uri)
     ])
     const entity = requireDocument(resolved, `The read of ${uri}`)
     // The entity cannot assert about itself.  It reaches the annotation list
@@ -197,21 +210,11 @@ async function aliasTargetedAnnotations(entity, requestedUri, found) {
     const requested = rerum.canonicalId(requestedUri)
     const aliases = recordUris(entity).filter(u => rerum.canonicalId(u) !== requested)
     if (aliases.length === 0) { return [] }
-    const list = await queryAll({
-        "$and": [
-            { "$or": aliases.flatMap(targetingClauses) },
-            { "$or": annotationTypeClauses() },
-            { "__rerum.generatedBy": rerum.generatedBy() }
-        ],
-        "__rerum.history.next": { "$exists": true, "$size": 0 }
-    }, aliases.join(", "))
+    const list = await queryAll(targetingQuery(aliases), aliases.join(", "))
     // An annotation can name the entity by BOTH URIs, and the entity itself can
     // come back here when the slug resolves to it, so dedupe on what the first
     // query already produced rather than trusting the two result sets to be
     // disjoint.
-    // Only real ids go in: canonicalId passes undefined through, and one id-less
-    // document in the first result set would otherwise put undefined in the set
-    // and swallow EVERY id-less annotation this query returns.
     const seen = new Set([...found, entity]
         .map(doc => rerum.canonicalId(doc?.["@id"] ?? doc?.id))
         .filter(k => typeof k === "string"))
@@ -224,11 +227,6 @@ async function aliasTargetedAnnotations(entity, requestedUri, found) {
  * must-revalidate) and carries no annotation provenance.
  * DEER filters every read by the one agent in config.GENERATOR, so the server request
  * and the client fallback below always merge the same annotations.
- *
- * This is the entry point an Entity resolves through, so that the document it
- * holds is a RERUM document on both strategies rather than a shaped one on this
- * path and a raw one on the other.  Consumers that want DEER's value objects
- * call forDisplay() below, which is this plus one shaping pass.
  *
  * @param {String|Object} id the entity URI or an object carrying one.
  * @param {Object} options `fresh: true` busts the HTTP cache (read-after-write).
@@ -245,9 +243,6 @@ export async function forDisplayRaw(id, { fresh = false } = {}) {
             uncountedDeployments.add(deployment)
             console.warn(`${deployment} does not send the Annotations-Gathered/Annotations-Merged headers on /expanded, so the completeness of the server merge cannot be verified. Every display read falls back to the client path: correct, but the cacheable read path is effectively disabled and each read now costs three requests instead of one. Upgrade the RERUM deployment.`)
         }
-        // Merged WITHOUT provenance, which is what makes the fallback
-        // indistinguishable from the server merge rather than something that has
-        // to be scrubbed back down to it afterwards.
         const { entity, annotations } = await clientRead(uri, { fresh })
         return mergeAssertions(entity, annotations, { provenance: false })
     }
