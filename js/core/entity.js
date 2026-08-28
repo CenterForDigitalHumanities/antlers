@@ -1,5 +1,6 @@
 /**
  * @module entity Reactive Entity/Annotation objects and render coordination.
+ * @author Patrick Cuba <cubap@slu.edu>
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
  * Ported from releases/rc-1.0/js/entities.js.  Controls the Entity class
@@ -356,6 +357,9 @@ class Entity extends EventTarget {
                 ? `the ${this.#dataStrategy} read is being upgraded to ${this.#strategy}`
                 : `the upgrade from the ${this.#dataStrategy} read to ${this.#strategy} failed (${this.#error.message})`
             throw new Error(`${this.#id}: assertions are not available -- ${why}. Await assertionsForEditing(), or render on the 'update'/'complete' events.`)
+        }
+        if (this.#error !== undefined && this.#dataStrategy === undefined) {
+            throw new Error(`${this.#id}: assertions are not available -- the read failed (${this.#error.message}). Read .error, or render on the 'error' event.`, { cause: this.#error })
         }
         if (this.#assertions === undefined) {
             this.#assertions = deepFreeze(markShaped(structuredClone((this.#strategy === "display")

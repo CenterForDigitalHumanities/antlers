@@ -65,6 +65,14 @@
                 read — never a header, because the browser cache keys on URL.
             </p>
             <dl class="kv" id="configOut"></dl>
+            <p class="hint">
+                The client's targeting query mirrors the server's <code>findLeafAnnotationsFor</code>
+                (<code>rerum_server_nodejs/controllers/utils.js</code>), and nothing imports one into the
+                other — the two lists are kept in step by hand. This compares the predicates
+                <code>expand.clientRead()</code> actually sends against a transcription of the server's.
+                It runs at load and issues no requests.
+            </p>
+            <div class="verdict" id="mirrorVerdict"></div>
             <p>
                 <label><input type="checkbox" id="debugToggle"> <code>config.DEBUG</code> — verbose library logging</label>
             </p>
@@ -444,6 +452,99 @@
         const valuesOnly = (shaped) => JSON.stringify(Object.fromEntries(
             asserted(shaped).map(([key, val]) => [key, [val].flat().map(v => v?.value)])
         ))
+
+        /* -------------------------------------------------- client/server query mirror */
+
+        /**
+         * The targeting query findLeafAnnotationsFor builds, transcribed BY HAND from
+         * rerum_server_nodejs/controllers/utils.js.  Keeping it by hand is the whole
+         * point: when js/core drifts from the server, this is what says so.
+         */
+        function serverMirror(uri, generator) {
+            const TARGET_KEYS = ['target', 'target.@id', 'target.id', 'target.source', 'target.source.@id', 'target.source.id']
+            const escapeRegex = (literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+            const spell = (scheme) => uri.replace(/^https?/, scheme)
+            const targets = []
+            for (const key of TARGET_KEYS) {
+                targets.push({ [key]: spell('http') }, { [key]: spell('https') })
+                // Two separately anchored patterns, NOT one alternation: `^a…|^b…`
+                // cannot use an index prefix and `^a…` can.
+                for (const scheme of ['http', 'https']) {
+                    targets.push({ [key]: { $regex: `^${escapeRegex(spell(scheme))}#` } })
+                }
+            }
+            const types = ['Annotation', 'oa:Annotation', 'http://www.w3.org/ns/oa#Annotation', 'https://www.w3.org/ns/oa#Annotation']
+                .flatMap(type => [{ type }, { '@type': type }])
+            const filters = ['http', 'https']
+                .map(scheme => ({ '__rerum.generatedBy': generator.replace(/^https?/, scheme) }))
+            filters.push({ '__rerum.history.next': { $exists: true, $size: 0 } })
+            return { targets, types, filters }
+        }
+
+        /** A clause list flattened to comparable `key=value` / `key~pattern` predicates. */
+        function predicatesOf(clauses) {
+            const out = new Set()
+            for (const clause of clauses) {
+                for (const [key, value] of Object.entries(clause)) {
+                    if (value === null || typeof value !== 'object') { out.add(`${key}=${value}`); continue }
+                    if (Array.isArray(value.$in)) { value.$in.forEach(one => out.add(`${key}=${one}`)); continue }
+                    if (typeof value.$regex === 'string') { out.add(`${key}~${value.$regex}`); continue }
+                    out.add(`${key}=${JSON.stringify(value)}`)
+                }
+            }
+            return out
+        }
+
+        const sameSet = (a, b) => a.size === b.size && [...a].every(one => b.has(one))
+
+        /**
+         * The query the client actually puts on the wire, taken through config.fetch
+         * rather than by exporting internals.  Nothing leaves the page: the stub
+         * answers the entity GET and the annotation query itself.
+         */
+        async function captureClientQuery(uri) {
+            const captured = []
+            const restore = config.fetch
+            const json = (body) => new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } })
+            config.fetch = async (url, options = {}) => {
+                if (options.method === 'POST') {
+                    captured.push(JSON.parse(options.body))
+                    return json([])
+                }
+                return json({ '@id': uri, type: 'Thing' })
+            }
+            try { await expand.clientRead(uri) } finally { config.fetch = restore }
+            return captured[0]
+        }
+
+        async function checkQueryMirror() {
+            const uri = `${config.ID_BASES.at(-1)}mirrorprobe`
+            let client
+            try {
+                client = await captureClientQuery(uri)
+            } catch (err) {
+                verdict('mirrorVerdict', [[`Could not capture the client query: ${err.message}`, false]])
+                return
+            }
+            const server = serverMirror(uri, config.GENERATOR)
+            const clientFilters = [
+                { '__rerum.generatedBy': client['__rerum.generatedBy'] },
+                { '__rerum.history.next': client['__rerum.history.next'] }
+            ]
+            const compare = (label, mine, theirs) => {
+                const a = predicatesOf(mine)
+                const b = predicatesOf(theirs)
+                const missing = [...b].filter(one => !a.has(one)).length
+                const extra = [...a].filter(one => !b.has(one)).length
+                const detail = sameSet(a, b) ? `${b.size} predicates` : `${missing} missing, ${extra} unmatched`
+                return [`${label} — ${detail}`, sameSet(a, b)]
+            }
+            verdict('mirrorVerdict', [
+                compare('Targeting predicates match the server', client.$and[0].$or, server.targets),
+                compare('Annotation-type clauses match the server', client.$and[1].$or, server.types),
+                compare('Generator and leaf-version filters match the server', clientFilters, server.filters)
+            ])
+        }
 
         /* -------------------------------------------------- last created */
 
@@ -877,6 +978,7 @@
         /* -------------------------------------------------- boot */
 
         renderLog()
+        checkQueryMirror()
         describe('collectionStats', [['EntityMap size', EntityMap.size]])
         if (lastCreated) { say('createStatus', `Last created this session: ${lastCreated}`) }
     </script>

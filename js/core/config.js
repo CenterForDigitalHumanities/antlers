@@ -1,5 +1,6 @@
 /**
  * @module config Core-layer configuration for DEER 2.0.
+ * @author Patrick Cuba <cubap@slu.edu>
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
  * Shipped defaults talk to the public sandbox proxy (tinydev.rerum.io) and the
@@ -74,6 +75,9 @@ export function configure(overrides = {}) {
     if (URLS) { Object.assign(config.URLS, URLS) }
     if (ID_BASES) {
         config.ID_BASES = ID_BASES.map(base => {
+            if (typeof base !== "string" || base.length === 0) {
+                throw new TypeError(`config.ID_BASES members must be non-empty URI prefix strings, and got ${JSON.stringify(base)}. ID_BASES is the support boundary — it decides which URIs DEER will read at all.`)
+            }
             const https = base.replace(/^http:/, "https:")
             return https.endsWith("/") ? https : `${https}/`
         })

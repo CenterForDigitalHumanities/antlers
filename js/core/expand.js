@@ -1,5 +1,6 @@
 /**
  * @module expand Entity resolution strategy — two read paths, chosen by consumer.
+ * @author Patrick Cuba <cubap@slu.edu>
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
  * Controls the expand logic that gathers Annotation objects targeting an
@@ -40,7 +41,7 @@ const onlyAnnotations = (finds) => (Array.isArray(finds) ? finds : [])
  * annotates them through the RERUM API; an entity outside RERUM has no
  * `/expanded` merge, no queryable annotations, and nothing DEER could write
  * back to.
-
+ *
  * The common cause is not foreign data at all but a RERUM deployment on a host
  * config.ID_BASES does not list, so the message names that first.
  *
@@ -96,7 +97,7 @@ async function queryAll(body, label) {
         }
         if (list.length < page) { return all }
         if (fetched > config.MAX_RESULTS) {
-            throw new RangeError(`${label}: more than ${config.MAX_RESULTS} documents fetched without reaching the end of this read — more match than the backstop allows, or the query endpoint is ignoring 'skip'. Refusing to return a partial merge — it would look complete and make the next form save POST a duplicate assertion for everything past the cut.`)
+            throw new RangeError(`${label}: more than ${config.MAX_RESULTS} documents fetched without reaching the end of this read.`)
         }
     }
 }
@@ -115,10 +116,9 @@ function targetingClauses(uri) {
     const uris = rerum.httpsIdArray(uri)
     const fragments = ["http", "https"]
         .map(scheme => `^${escapeRegex(uri.replace(/^https?/, scheme))}#`)
-        .join("|")
     return TARGET_KEYS.flatMap(key => [
         { [key]: uris },
-        { [key]: { "$regex": fragments } }
+        ...fragments.map(pattern => ({ [key]: { "$regex": pattern } }))
     ])
 }
 

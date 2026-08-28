@@ -39,10 +39,9 @@ const fetcher = (...args) => (config.fetch ?? globalThis.fetch)(...args)
 const staleIds = new Map()
 
 /**
- * How long a write's invalidation is honored.
- * RERUM sends `Cache-Control: max-age=86400, must-revalidate`.
- *
- * `GET /v1/id/:_id` and its `/expanded` merge.  That is the window.
+ * How long a write's invalidation is honored.  RERUM sends
+ * `Cache-Control: max-age=86400, must-revalidate` on `GET /v1/id/:_id` and on
+ * its `/expanded` merge, so that is the window a stale entry has to cover.
  */
 const STALE_TTL_MS = 86_400_000
 
@@ -120,20 +119,20 @@ function requireGenerator() {
         throw new TypeError("A generator is required. Set config.GENERATOR — no read applies a default filter, and an unfiltered read merges annotations from every application that ever targeted the entity.")
     }
     const isShippedGenerator = canonicalId(config.GENERATOR) === canonicalId(SHIPPED_GENERATOR)
+    const stillShipped = Object.entries(SHIPPED_URLS)
+        .filter(([name, url]) => config.URLS[name] === url)
+        .map(([name]) => name)
     if (isShippedGenerator) {
         if (generatorWarnedFor !== config.GENERATOR) {
             generatorWarnedFor = config.GENERATOR
-            console.warn("You will see everyone's annotations. Set config.GENERATOR to this deployment's own RERUM agent URI before shipping to production.")
+            console.warn(stillShipped.length === Object.keys(SHIPPED_URLS).length
+                ? "You will see everyone's annotations. Set config.GENERATOR to this deployment's own RERUM agent URI before shipping to production."
+                : `config.URLS is repointed at your own TinyNode but config.GENERATOR is still the shared sandbox agent (${SHIPPED_GENERATOR}). Your proxy writes with its OWN agent, so every record you create is filtered back out of every read — writes succeed, your own data never comes back. Set config.GENERATOR to your deployment's RERUM agent URI.`)
         }
     }
-    else if (proxyWarnedFor !== config.GENERATOR) {
-        const stillShipped = Object.entries(SHIPPED_URLS)
-            .filter(([name, url]) => config.URLS[name] === url)
-            .map(([name]) => name)
-        if (stillShipped.length > 0) {
-            proxyWarnedFor = config.GENERATOR
-            console.warn(`config.GENERATOR is repointed but config.URLS.${stillShipped.join("/")} still point at the shipped sandbox proxy, which writes with its OWN agent. Every record you create will be generatedBy ${SHIPPED_GENERATOR} and filtered back out of every read — writes succeed, reads come back empty. Repoint URLS at your own TinyNode deployment.`)
-        }
+    else if (proxyWarnedFor !== config.GENERATOR && stillShipped.length > 0) {
+        proxyWarnedFor = config.GENERATOR
+        console.warn(`config.GENERATOR is repointed but config.URLS.${stillShipped.join("/")} still point at the shipped sandbox proxy, which writes with its OWN agent. Every record you create will be generatedBy ${SHIPPED_GENERATOR} and filtered back out of every read — writes succeed, reads come back empty. Repoint URLS at your own TinyNode deployment.`)
     }
     return config.GENERATOR
 }
@@ -343,7 +342,7 @@ export async function resolve(id, { fresh = false } = {}) {
 /**
  * GET the server-side annotation merge for a RERUM-hosted entity.
  * `generator` is REQUIRED and is always config.GENERATOR.
-
+ *
  * @param {String|Object} id the entity URI (or an object carrying one).
  * @param {Object} options `fresh` (bust HTTP cache).
  * @returns {Promise<Object>} `{document, gathered, merged}`.  The counts come
@@ -383,20 +382,22 @@ export async function query(body, { limit = config.LIMIT, skip = config.SKIP } =
     const url = new URL(absoluteUrl(config.URLS.QUERY))
     url.searchParams.set("limit", limit)
     url.searchParams.set("skip", skip)
-    return fetcher(url.toString(), {
+    const target = url.toString()
+    return fetcher(target, {
         method: "POST",
         headers: JSON_HEADERS,
         body: JSON.stringify(body)
-    }).then(handleResponse)
+    }).then(response => handleResponse(response, { detail: true, url: target }))
 }
 
 async function write(url, method, obj) {
-    return fetcher(absoluteUrl(url), {
+    const target = absoluteUrl(url)
+    return fetcher(target, {
         method,
         headers: JSON_HEADERS,
         body: JSON.stringify(obj)
     })
-        .then(handleResponse)
+        .then(response => handleResponse(response, { detail: true, url: target }))
         .then(data => {
             // RERUM attaches `new_obj_state`, a self-copy of the response body, to
             // every write response.  It is deprecated and slated for removal.
@@ -466,7 +467,7 @@ async function deleteDocument(entity) {
     const uri = canonicalId(idOf(entity))
     const recordId = isRerumId(uri) ? uri.slice(uri.lastIndexOf("/") + 1) : ""
     if (recordId === "") {
-        throw new TypeError(`${uri} is not a RERUM document id, so there is nothing to delete. Ids must be bare URIs on config.ID_BASES (currently ${JSON.stringify(config.ID_BASES)}) — no query string, no fragment, no trailing slash.`)
+        throw new TypeError(`${uri} is not a RERUM document id, so there is nothing to delete.`)
     }
     // A caller who passed only an id has handed over nothing that names a target.
     const document = (typeof entity === "string")

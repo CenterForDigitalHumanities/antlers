@@ -1,5 +1,6 @@
 /**
  * @module assertions Annotation-merge logic and DEER value shaping.
+ * @author Patrick Cuba <cubap@slu.edu>
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
  * buildValueObject is lifted from the 0.11 UTILS.expand internals;
@@ -23,7 +24,7 @@ import { getValue } from './normalize.js'
  * ignored: a DEER app declares `type`, `@type`, and `@context` directly on the
  * entity it creates and never relies on an Annotation to assert them.
  *
- * This list is the client half of the server's PROTECTED_EXPANSION_KEYS
+ * This list is the client half of the server's PROTECTED_EXPANSION_KEYS.
  * Since the server refuses these too, forDisplay can trust its merge for identity and
  * read it with a single request.
  */
@@ -141,7 +142,7 @@ export function buildValueObject(val, fromAnno = {}) {
  * Idempotence here is by object IDENTITY, deliberately — `source` and `value`
  * are ordinary vocabulary terms, so sniffing for them mistakes real data for a
  * value object.  The cost is that identity does not survive a clone, and
- * Entity#assertions hands every subscriber a CLONE.
+ * Entity#assertions memoizes a structuredClone of the shaped document.
  *
  * @param {Object} shaped a document this module produced, then cloned.
  * @returns {Object} the same document.
