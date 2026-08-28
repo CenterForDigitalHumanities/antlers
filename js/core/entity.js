@@ -427,12 +427,22 @@ class Entity extends EventTarget {
         this.#data = candidate
         this.#assertions = undefined
         this.#id = nextId
-        if (!this.#applying) { this.#dataStrategy = undefined }
+        if (!this.#applying) {
+            this.#dataStrategy = undefined
+            this.#error = undefined
+        }
         this.#register(canonical)
         // A record answering to a Slug answers to TWO URIs, and RERUM treats
         // them as one record.  Registering the alias makes this map agree.
         const slugUri = slugAliasOf(candidate)
-        if (slugUri !== undefined) { this.#register(slugUri) }
+        if (slugUri !== undefined) {
+            const holder = entityMap.get(slugUri)
+            if (holder !== undefined && holder !== this) {
+                this.#adopt(holder)
+                return
+            }
+            this.#register(slugUri)
+        }
         if (!this.#merging) { this.#announceShaped("update") }
         if (isFirstData) {
             // Construction begins resolution.  That is a first render, not a
@@ -814,7 +824,7 @@ class Entity extends EventTarget {
                 try { this.data = resolved } finally { this.#applying = false }
                 if (generation !== this.#generation) { return }
                 this.#settled = true
-                this.#announce("complete")
+                if (this.#error === undefined) { this.#announce("complete") }
                 return
             }
             const { entity, annotations } = await expand.clientRead(this.#id, { fresh })

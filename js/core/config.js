@@ -80,7 +80,7 @@ const INTEGER_DEFAULTS = Object.freeze({ LIMIT: 50, MAX_LIMIT: 500, SKIP: 0, MAX
  * @param {Number} fallback the default for this key.
  * @returns {Number} an integer.
  */
-function asInteger(value, fallback) {
+export function asInteger(value, fallback) {
     const number = (typeof value === "string" && value.trim() !== "") ? Number(value) : value
     return (typeof number === "number" && Number.isFinite(number)) ? Math.trunc(number) : fallback
 }
