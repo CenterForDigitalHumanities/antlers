@@ -209,7 +209,10 @@ function clearEntities() {
  */
 class Entity extends EventTarget {
     #strategy
-    // Which read path produced the document currently in _data, as opposed to
+    // The document as the read handed it over, reachable only through the
+    // `data` accessor pair.
+    #data
+    // Which read path produced the document currently in #data, as opposed to
     // #strategy, which is the path this Entity is HEADING for.
     #dataStrategy
     #id
@@ -222,7 +225,7 @@ class Entity extends EventTarget {
     // True only while an editing resolution is between writing the raw entity
     // and merging its annotations.
     #merging = false
-    // True only while a resolution is writing its own result into _data, which
+    // True only while a resolution is writing its own result into #data, which
     // is what tells `set data` an id change came from the read rather than from
     // a consumer reassigning the document.
     #applying = false
@@ -315,7 +318,7 @@ class Entity extends EventTarget {
     }
 
     get data() {
-        return (this.#adopted !== undefined) ? this.#adopted.data : this._data
+        return (this.#adopted !== undefined) ? this.#adopted.data : this.#data
     }
 
     /**
@@ -332,8 +335,8 @@ class Entity extends EventTarget {
         }
         if (this.#assertions === undefined) {
             this.#assertions = deepFreeze(markShaped(structuredClone((this.#strategy === "display")
-                ? shapeValues(this._data)
-                : applyAssertions(this._data, [...this.#annotations.values()].map(a => a.data)))))
+                ? shapeValues(this.#data)
+                : applyAssertions(this.#data, [...this.#annotations.values()].map(a => a.data)))))
         }
         return this.#assertions
     }
@@ -378,11 +381,11 @@ class Entity extends EventTarget {
         }
         // Adopt a shallow copy so the caller's object is never mutated.
         const candidate = { ...entity }
-        if (objectMatch(this._data, candidate)) {
+        if (objectMatch(this.#data, candidate)) {
             // no-op suppression: identical data must not re-announce (render loop guard)
             return
         }
-        const isFirstData = this._data === undefined
+        const isFirstData = this.#data === undefined
         const oldId = this.#id
         const nextId = candidate["@id"] ?? candidate.id ?? oldId
         const canonical = rerum.canonicalId(nextId)
@@ -391,7 +394,7 @@ class Entity extends EventTarget {
             this.#adopt(incumbent)
             return
         }
-        this._data = candidate
+        this.#data = candidate
         this.#assertions = undefined
         this.#id = nextId
         if (!this.#applying) { this.#dataStrategy = undefined }
@@ -467,7 +470,7 @@ class Entity extends EventTarget {
         // result must not be applied.  Bumping the generation retires it through
         // the checks #resolveURI already makes.
         this.#generation++
-        this._data = undefined
+        this.#data = undefined
         this.#assertions = undefined
         this.#annotations = new Map()
         if (hadSubscribers) { this.#forwardFrom(incumbent) }
@@ -580,10 +583,17 @@ class Entity extends EventTarget {
      * the events it needed have already fired.  Without this, only the first of
      * N elements on one deer-id ever renders.
      *
-     * @param {Function} handler receives the same CustomEvents addEventListener would.
+     * @param {Function|EventListener} handler a function, or an object with a
+     * handleEvent() method — either receives the same CustomEvents
+     * addEventListener would.
      * @returns {Function} call to unsubscribe.
      */
     subscribe(handler) {
+        // requiring handleEvent at subscribe time means a wrong argument fails
+        // here rather than crashing the catch-up replay later.
+        if (typeof handler !== "function" && typeof handler?.handleEvent !== "function") {
+            throw new TypeError("subscribe() takes a function or an EventListener object with handleEvent().")
+        }
         if (this.#adopted !== undefined) { return this.#adopted.subscribe(handler) }
         if (this.#subscribers === 0) { this.#reclaim() }
         // #reclaim adopts the Entity that claimed this one's keys while it was
@@ -615,20 +625,22 @@ class Entity extends EventTarget {
      *
      * Reads go through the public getters so an adopted Entity catches up from
      * the record's real state rather than from its own empty shell.
-     * @param {Function} handler receives the same CustomEvents addEventListener would.
+     * @param {Function|EventListener} handler receives the same CustomEvents
+     * addEventListener would.
      *
      * @returns {Function} call to detach.
      */
     #listen = (handler) => {
+        const call = (ev) => (typeof handler === "function") ? handler(ev) : handler.handleEvent(ev)
         for (const action of LIFECYCLE) { this.addEventListener(action, handler) }
         if (this.settled) {
             if (this.error === undefined) {
-                handler(this.#event("update", this.assertions))
+                call(this.#event("update", this.assertions))
                 // Replay `complete` too.  An element that renders on it would
                 // otherwise render only for the first subscriber.
-                handler(this.#event("complete"))
+                call(this.#event("complete"))
             } else {
-                handler(this.#event("error", this.error))
+                call(this.#event("error", this.error))
             }
         }
         return () => { for (const action of LIFECYCLE) { this.removeEventListener(action, handler) } }
@@ -654,7 +666,7 @@ class Entity extends EventTarget {
         const held = this.#annotations.get(root)
         // Re-attaching what is already held asserts nothing new, and must not
         // invalidate or re-announce on every read that happens to return it.
-        if (held !== undefined && held.id === annotation.id && objectMatch(held.data, annotation.data)) { return true }
+        if (held !== undefined && sameId(held.id, annotation.id) && objectMatch(held.data, annotation.data)) { return true }
         this.#annotations.set(root, annotation)
         this.#assertions = undefined
         if (!this.#rebuilding && this.#settled && this.#error === undefined) { this.#announceShaped("update") }
@@ -706,8 +718,10 @@ class Entity extends EventTarget {
      * again resurrects a value the data no longer asserts.
      *
      * @param {Array<Object>} annotations annotation documents targeting this id.
+     * @param {Object} [before] the shaped view subscribers last saw, captured by
+     * the resolution before it applied anything.
      */
-    #findAssertions = (annotations) => {
+    #findAssertions = (annotations, before) => {
         this.#annotations = new Map()
         this.#assertions = undefined
         this.#rebuilding = true
@@ -718,7 +732,9 @@ class Entity extends EventTarget {
         } finally {
             this.#rebuilding = false
         }
-        this.#announce("update", this.assertions)
+        if (before === undefined || !objectMatch(before, this.assertions)) {
+            this.#announce("update", this.assertions)
+        }
         this.#settled = true
         this.#announce("complete")
     }
@@ -745,6 +761,9 @@ class Entity extends EventTarget {
             }
             const { entity, annotations } = await expand.clientRead(this.#id, { fresh })
             if (generation !== this.#generation) { return }
+            // A settled healthy Entity's assertions ARE
+            // its last announcement; anything else has no prior view.
+            const before = (this.#settled && this.#error === undefined) ? this.assertions : undefined
             this.#dataStrategy = strategy
             this.#merging = true
             this.#applying = true
@@ -755,7 +774,7 @@ class Entity extends EventTarget {
                 this.#applying = false
             }
             if (generation !== this.#generation) { return }
-            this.#findAssertions(annotations)
+            this.#findAssertions(annotations, before)
         } catch (err) {
             if (generation !== this.#generation) { return }
             this.#fail(err)

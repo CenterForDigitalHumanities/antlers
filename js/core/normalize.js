@@ -64,7 +64,7 @@ export function getValue(property, alsoPeek = [], asType) {
     }
     if (Array.isArray(property)) {
         // It is an array of things; the caller decides how to join or map them.
-        return asType ? property.map(p => castValue(p, asType)) : property
+        return asType ? property.map(p => getValue(p, alsoPeek, asType)) : property
     }
     if (typeof property === "object") {
         // JSON-LD insists on "@value", but the wild data this consumes

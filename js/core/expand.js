@@ -6,7 +6,7 @@
 
 import config from './config.js'
 import * as rerum from './rerum.js'
-import { applyAssertions, isAnnotationType, requireDocument, shapeValues } from './assertions.js'
+import { applyAssertions, IDENTITY_KEYS, isAnnotationType, requireDocument, shapeValues } from './assertions.js'
 
 /**
  * RERUM deployments already reported as sending no merge-count headers.  The
@@ -228,7 +228,7 @@ export async function forDisplay(id, { fresh = false } = {}) {
             uncountedDeployments.add(deployment)
             console.warn(`${deployment} does not send the Annotations-Gathered/Annotations-Merged headers on /expanded, so the completeness of the server merge cannot be verified. Every display read falls back to the client path: correct, but the cacheable read path is effectively disabled and each read now costs two requests. Upgrade the RERUM deployment.`)
         }
-        return clientMerge(uri, { fresh })
+        return displayScrubbed(await clientMerge(uri, { fresh }))
     }
     if (gathered !== merged && config.DEBUG) {
         console.debug(`${uri}: server merged ${merged} of ${gathered} annotations. The rest assert nothing DEER reads (multi-key, multi-body, or protected-key bodies); the client path declines them identically.`)
@@ -253,4 +253,24 @@ export async function forEditing(id) {
 async function clientMerge(uri, options) {
     const { entity, annotations } = await clientRead(uri, options)
     return applyAssertions(entity, annotations)
+}
+
+/**
+ * Make a client-path merge indistinguishable from a server-path one, for the
+ * fallback above. Assigns undefined rather than deleting, and mutates in place, so
+ * the value objects keep the exact shape and SHAPED identity buildValueObject gave them.
+ *
+ * @param {Object} merged a DEER-shaped document off the client path.
+ * @returns {Object} the same document, provenance scrubbed.
+ */
+function displayScrubbed(merged) {
+    for (const [key, val] of Object.entries(merged)) {
+        if (IDENTITY_KEYS.includes(key)) { continue }
+        for (const v of [val].flat()) {
+            if (v?.source === undefined) { continue }
+            v.source.citationSource = undefined
+            v.evidence = ""
+        }
+    }
+    return merged
 }
