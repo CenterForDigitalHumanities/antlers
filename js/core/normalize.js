@@ -53,8 +53,11 @@ function castValue(prop, asType) {
  * @param {Array<String>|String} alsoPeek additional keys to check for a nested value.
  * @param {String} [asType] optional cast: STRING | NUMBER | INTEGER | BOOLEAN.
  * @returns {any} the normalized value.  Arrayness is PRESERVED: an array in
- * yields an array out, with the cast applied member by member, and a peeked
- * one-member array stays a one-member array.
+ * yields an array out, each member normalized (peeked, and cast when asked)
+ * by this same function, and a peeked one-member array stays a one-member
+ * array.  The member rule does not depend on whether a cast was requested —
+ * a return SHAPE that changed with `asType` was an accident waiting for
+ * template bindings.
  */
 export function getValue(property, alsoPeek = [], asType) {
     let prop
@@ -63,8 +66,7 @@ export function getValue(property, alsoPeek = [], asType) {
         return undefined
     }
     if (Array.isArray(property)) {
-        // It is an array of things; the caller decides how to join or map them.
-        return asType ? property.map(p => getValue(p, alsoPeek, asType)) : property
+        return property.map(p => getValue(p, alsoPeek, asType))
     }
     if (typeof property === "object") {
         // JSON-LD insists on "@value", but the wild data this consumes

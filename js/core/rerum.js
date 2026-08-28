@@ -194,8 +194,9 @@ function sweepStale() {
 
 /**
  * Checks if this read should bust the HTTP cache.  True until a read of this
- * request URL comes back ok after the write — markRefreshed records that — so
- * a failed reload does not spend the invalidation.
+ * request URL comes back USABLE after the write — ok and parsed, which is what
+ * markRefreshed records — so neither an HTTP failure nor an unparseable body
+ * spends the invalidation.
  */
 function needsReload(uri, url) {
     const key = canonicalId(uri)
@@ -271,8 +272,9 @@ export async function resolve(id, { fresh = false } = {}) {
     const uri = canonicalId(idOf(id))
     const reload = needsReload(uri, uri) || fresh
     const response = await fetcher(uri, reload ? { cache: "reload" } : {})
-    if (reload && response.ok) { markRefreshed(uri, uri) }
-    return handleResponse(response)
+    const document = await handleResponse(response)
+    if (reload) { markRefreshed(uri, uri) }
+    return document
 }
 
 /**
@@ -294,8 +296,8 @@ export async function expanded(id, { fresh = false } = {}) {
     const url = `${uri}/expanded?generator=${encodeURIComponent(requireGenerator())}`
     const reload = needsReload(uri, url) || fresh
     const response = await fetcher(url, reload ? { cache: "reload" } : {})
-    if (reload && response.ok) { markRefreshed(uri, url) }
     const document = await handleResponse(response)
+    if (reload) { markRefreshed(uri, url) }
     return {
         document,
         gathered: countHeader(response.headers, "Annotations-Gathered"),
@@ -360,7 +362,10 @@ export function create(obj) {
 /**
  * Update a document through the TinyNode proxy, creating a new version.
  *
- * @param {Object} obj the document, carrying the `@id` to update.
+ * @param {Object} obj the document, carrying the `@id` to update.  When the
+ * update RETARGETS an Annotation, the abandoned target's `/expanded` merge also
+ * changed but cannot be known from this document — the caller that retargets
+ * must re-read the old target with `fresh: true` itself.
  * @returns {Promise<Object>} the new version.
  */
 export function update(obj) {
@@ -370,7 +375,9 @@ export function update(obj) {
 /**
  * Overwrite a document in place through the TinyNode proxy.
  *
- * @param {Object} obj the document, carrying the `@id` to overwrite.
+ * @param {Object} obj the document, carrying the `@id` to overwrite.  As with
+ * update(), an overwrite that retargets an Annotation leaves the abandoned
+ * target for the caller to re-read with `fresh: true`.
  * @returns {Promise<Object>} the overwritten document.
  */
 export function overwrite(obj) {

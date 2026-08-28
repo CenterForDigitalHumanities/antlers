@@ -11,7 +11,6 @@ import * as expand from './expand.js'
 import { applyAssertions, markShaped, shapeValues } from './assertions.js'
 
 const EntityMap = new Map()
-const inFlight = new Map()
 
 /**
  * Ids declared as needing the editing read before anything constructs an Entity
@@ -187,7 +186,6 @@ function getEntity(id, { strategy = "display", upgrade = true } = {}) {
 function clearEntities() {
     for (const held of new Set(EntityMap.values())) { held.retire() }
     EntityMap.clear()
-    inFlight.clear()
     editingIds.clear()
     rerum.clearStale()
     expand.clearWarnings()
@@ -257,6 +255,10 @@ class Entity extends EventTarget {
     // released Entity (had subscribers, has none) must stay out of the map,
     // while a never-subscribed one still registers.
     #everSubscribed = false
+    // The resolution currently in flight on this Entity, `{key, promise, fresh}`.
+    // getEntity() guarantees one live Entity per id, so sharing a read never
+    // crosses instances and this is instance state, not module state.
+    #inFlight
 
     /**
      * @param {Object|String} entity object to be described (usually from a JSON-LD
@@ -574,6 +576,9 @@ class Entity extends EventTarget {
     retire() {
         if (this.#adopted !== undefined) { this.#adopted.retire(); return }
         this.#generation++
+        // Dropped, not just retired: a later resolve() must start a real read
+        // rather than hand back a promise whose result will never be applied.
+        this.#inFlight = undefined
     }
 
     /**
@@ -689,8 +694,8 @@ class Entity extends EventTarget {
         // handed a display resolution's promise, which resolves to a document
         // carrying no provenance at all.
         const key = `${this.#strategy}:${rerum.canonicalId(this.#id)}`
-        const pending = inFlight.get(key)
-        if (pending && pending.owner === this && (pending.fresh || !fresh)) { return pending.promise }
+        const pending = this.#inFlight
+        if (pending && pending.key === key && (pending.fresh || !fresh)) { return pending.promise }
         // Starting a new resolution retires every older one.  The only way to
         // reach here with one already in flight is a fresh request overtaking a
         // non-fresh one, so newest-started is always the one that should win.
@@ -699,17 +704,18 @@ class Entity extends EventTarget {
         // mid-retry waits for the real answer.
         if (this.#error !== undefined) { this.#settled = false }
         const promise = this.#resolveURI(fresh)
-            .finally(() => { if (inFlight.get(key)?.promise === promise) { inFlight.delete(key) } })
-        inFlight.set(key, { promise, fresh, owner: this })
+            .finally(() => { if (this.#inFlight?.promise === promise) { this.#inFlight = undefined } })
+        this.#inFlight = { key, promise, fresh }
         return promise
     }
 
     /**
      * Take the annotation documents this Entity's read returned.  Constructing
-     * an Annotation self-wires it onto every Entity it targets, so attachment
-     * is a side effect; attaching explicitly as well is what makes the count
-     * honest, because attachAnnotation reports whether THIS Entity could key
-     * on it.
+     * an Annotation self-wires it onto every Entity it targets, but self-wiring
+     * looks targets up by canonical URI, so an annotation targeting a FRAGMENT
+     * of this id (`…id#xywh=…`, which the read's regex clause deliberately
+     * fetches) never finds this Entity that way.  The explicit attach below is
+     * the only path those take — it is not redundant with the side effect.
      *
      * The read is AUTHORITATIVE: it returns every annotation this deployment has
      * against the entity, so the Map is rebuilt rather than added to.  Anything
