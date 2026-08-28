@@ -75,12 +75,13 @@ const escapeRegex = (literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 async function queryAll(body, label) {
     // Guarded: a deployment that configures LIMIT at 0 or below would otherwise
     // page forever, asking for nothing each time.
-    const page = Math.max(1, config.LIMIT)
+    let page = Math.max(1, config.LIMIT)
+    // This stops clients from silently truncating.
+    // It is a guard against a known RERUM setting that keeps paging mechanics honest.
+    if (page > config.MAX_LIMIT) page = config.MAX_LIMIT
     const all = []
     const seen = new Set()
-    // Counts RAW documents fetched, not deduped ones: a proxy that ignores
-    // `skip` serves the same full page forever, and a deduped count would hold
-    // still while the loop hammered it.
+    // Counts RAW documents fetched, not deduped ones.
     let fetched = 0
     for (let skip = 0; ; skip += page) {
         const finds = await rerum.query(body, { limit: page, skip })

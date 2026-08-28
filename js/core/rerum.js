@@ -384,6 +384,10 @@ export async function query(body, { limit = config.LIMIT, skip = config.SKIP } =
     // URL-object building replaces (not duplicates) any limit/skip already baked
     // into an implementer's configured QUERY URL.
     const url = new URL(absoluteUrl(config.URLS.QUERY))
+    // This stops clients from silently truncating.
+    // It is a guard against a known RERUM setting that keeps paging mechanics honest.
+    limit = Math.max(1, limit)
+    if (limit > config.MAX_LIMIT) limit = config.MAX_LIMIT
     url.searchParams.set("limit", limit)
     url.searchParams.set("skip", skip)
     const target = url.toString()

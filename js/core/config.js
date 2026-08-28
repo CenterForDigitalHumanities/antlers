@@ -48,9 +48,13 @@ const config = {
     BASE: undefined,
 
     // Query paging defaults.  Integers, always — see INTEGER_DEFAULTS.
-    // LIMIT must be 500 or less
+    // LIMIT must not exceed RERUM API's max allowed limit and should be greater than 0.
     LIMIT: 50,
     SKIP: 0,
+
+    // RERUM API's max allowed limit, which is 500 at the time of writing.
+    // Used as a guard.  Do not increase without verifying against RERUM API.
+    MAX_LIMIT: 500,
 
     // The most documents one read pages through before it refuses.
     // A runaway backstop rather than a tuning knob.
@@ -66,7 +70,7 @@ const config = {
 /**
  * The config values that are counts, and what each falls back to.
  */
-const INTEGER_DEFAULTS = Object.freeze({ LIMIT: 50, SKIP: 0, MAX_RESULTS: 1000 })
+const INTEGER_DEFAULTS = Object.freeze({ LIMIT: 50, MAX_LIMIT: 500, SKIP: 0, MAX_RESULTS: 1000 })
 
 /**
  * A config count, always an integer.  A fraction drops its decimal; anything
