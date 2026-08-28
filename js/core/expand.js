@@ -2,11 +2,15 @@
  * @module expand Entity resolution strategy — two read paths, chosen by consumer.
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
+ * Controls the expand logic that gathers Annotation objects targeting an
+ * entity.  Annotation bodies are gathered and placed onto the entity
+ * results in a single assembled and described entity.  This is a combined
+ * effort with RERUM API services and DEER client functionality.
  */
 
 import config from './config.js'
 import * as rerum from './rerum.js'
-import { applyAssertions, IDENTITY_KEYS, isAnnotationType, requireDocument, shapeValues } from './assertions.js'
+import { annotationTypeClauses, applyAssertions, isAnnotationType, mergeAssertions, requireDocument, shapeValues } from './assertions.js'
 
 /**
  * RERUM deployments already reported as sending no merge-count headers.  The
@@ -126,16 +130,6 @@ function targetingClauses(uri) {
  * direct GET for the entity and one paged query for the annotations targeting
  * it.  A record with a RERUM Slug costs one further query.
  *
- * The entity is deliberately NOT folded into the annotation query's `$or`.
- * Measured on devstore against a 7-annotation entity: an `$or` combining the
- * entity's `@id` with the targeting clauses costs ~1530 ms, because mixing an
- * `@id` match and a nested `$and`/`$or` under one `$or` defeats index
- * selection — more than the sum of its parts (~460 ms for the `@id` branch
- * alone, ~65 ms for the targeting branch alone).  Split in two and run in
- * parallel the same read is ~160 ms end to end and returns identical
- * documents, provenance included.  One round trip is not worth 10x the
- * latency on the path a form prefills from.
- *
  * @param {String|Object} id the entity URI or an object carrying one.
  * @param {Object} options `fresh` busts the HTTP cache on the entity GET.
  * @returns {Promise<{entity: Object, annotations: Array<Object>}>} raw documents:
@@ -147,16 +141,18 @@ function targetingClauses(uri) {
 export async function clientRead(id, { fresh = false } = {}) {
     const uri = rerum.idOf(id)
     requireRerumId(uri)
-    // Both reads are independent, so neither waits on the other.  generatedBy()
-    // is called before the await so a missing generator still throws
-    // synchronously into the returned promise rather than after a request has
-    // already gone out.  RERUM is shared: another application's annotations on
-    // this entity are not ours to merge.
+    // Both reads are independent, so neither waits on the other.
     const generatedBy = rerum.generatedBy()
     const [resolved, list] = await Promise.all([
         rerum.resolve(uri, { fresh }),
         queryAll({
-            "$or": targetingClauses(uri),
+            "$and": [
+                { "$or": targetingClauses(uri) },
+                // Nothing but an Annotation asserts anything, so the type filter
+                // belongs in the query the way the server puts it there, not in a
+                // client-side pass over documents already paid for.
+                { "$or": annotationTypeClauses() }
+            ],
             "__rerum.generatedBy": generatedBy,
             "__rerum.history.next": { "$exists": true, "$size": 0 }
         }, uri)
@@ -204,6 +200,7 @@ async function aliasTargetedAnnotations(entity, requestedUri, found) {
     const list = await queryAll({
         "$and": [
             { "$or": aliases.flatMap(targetingClauses) },
+            { "$or": annotationTypeClauses() },
             { "__rerum.generatedBy": rerum.generatedBy() }
         ],
         "__rerum.history.next": { "$exists": true, "$size": 0 }
@@ -212,24 +209,33 @@ async function aliasTargetedAnnotations(entity, requestedUri, found) {
     // come back here when the slug resolves to it, so dedupe on what the first
     // query already produced rather than trusting the two result sets to be
     // disjoint.
-    const seen = new Set([...found, entity].map(doc => rerum.canonicalId(doc?.["@id"] ?? doc?.id)))
+    // Only real ids go in: canonicalId passes undefined through, and one id-less
+    // document in the first result set would otherwise put undefined in the set
+    // and swallow EVERY id-less annotation this query returns.
+    const seen = new Set([...found, entity]
+        .map(doc => rerum.canonicalId(doc?.["@id"] ?? doc?.id))
+        .filter(k => typeof k === "string"))
     return onlyAnnotations(list).filter(doc => !seen.has(rerum.canonicalId(doc["@id"] ?? doc.id)))
 }
 
 /**
- * Resolve an entity for display: the server-side annotation merge.  Cacheable
- * (the server sends max-age=86400, must-revalidate) and carries no annotation
- * provenance.
+ * Resolve an entity for display, RAW — the server-side annotation merge exactly
+ * as `/expanded` returns it.  Cacheable (the server sends max-age=86400,
+ * must-revalidate) and carries no annotation provenance.
  * DEER filters every read by the one agent in config.GENERATOR, so the server request
  * and the client fallback below always merge the same annotations.
  *
+ * This is the entry point an Entity resolves through, so that the document it
+ * holds is a RERUM document on both strategies rather than a shaped one on this
+ * path and a raw one on the other.  Consumers that want DEER's value objects
+ * call forDisplay() below, which is this plus one shaping pass.
+ *
  * @param {String|Object} id the entity URI or an object carrying one.
  * @param {Object} options `fresh: true` busts the HTTP cache (read-after-write).
- * @returns {Promise<Object>} DEER-shaped entity: asserted properties become
- * `{value, source, evidence}` objects (arrays thereof when multivalued).
+ * @returns {Promise<Object>} the merged entity document, unshaped.
  * @throws {TypeError} when the id is not RERUM-hosted.
  */
-export async function forDisplay(id, { fresh = false } = {}) {
+export async function forDisplayRaw(id, { fresh = false } = {}) {
     const uri = rerum.idOf(id)
     requireRerumId(uri)
     const { document, gathered, merged } = await rerum.expanded(uri, { fresh })
@@ -239,12 +245,30 @@ export async function forDisplay(id, { fresh = false } = {}) {
             uncountedDeployments.add(deployment)
             console.warn(`${deployment} does not send the Annotations-Gathered/Annotations-Merged headers on /expanded, so the completeness of the server merge cannot be verified. Every display read falls back to the client path: correct, but the cacheable read path is effectively disabled and each read now costs three requests instead of one. Upgrade the RERUM deployment.`)
         }
-        return displayScrubbed(await clientMerge(uri, { fresh }))
+        // Merged WITHOUT provenance, which is what makes the fallback
+        // indistinguishable from the server merge rather than something that has
+        // to be scrubbed back down to it afterwards.
+        const { entity, annotations } = await clientRead(uri, { fresh })
+        return mergeAssertions(entity, annotations, { provenance: false })
     }
     if (gathered !== merged && config.DEBUG) {
         console.debug(`${uri}: server merged ${merged} of ${gathered} annotations. The rest assert nothing DEER reads (multi-key, multi-body, or protected-key bodies); the client path declines them identically.`)
     }
-    return shapeValues(requireDocument(document, `The expanded read of ${uri}`))
+    return requireDocument(document, `The expanded read of ${uri}`)
+}
+
+/**
+ * Resolve an entity for display, DEER-shaped.
+ *
+ * @param {String|Object} id the entity URI or an object carrying one.
+ * @param {Object} options `fresh: true` busts the HTTP cache (read-after-write).
+ * @returns {Promise<Object>} DEER-shaped entity: asserted properties become
+ * `{value, source, evidence}` objects (arrays thereof when multivalued).  No
+ * value carries a `citationSource` — the display path never has one to carry.
+ * @throws {TypeError} when the id is not RERUM-hosted.
+ */
+export async function forDisplay(id, options) {
+    return shapeValues(await forDisplayRaw(id, options))
 }
 
 /**
@@ -257,31 +281,6 @@ export async function forDisplay(id, { fresh = false } = {}) {
  * @throws {TypeError} when the id is not RERUM-hosted.
  */
 export async function forEditing(id) {
-    return clientMerge(rerum.idOf(id), { fresh: true })
-}
-
-/** clientRead plus the merge — what every consumer that wants a document uses. */
-async function clientMerge(uri, options) {
-    const { entity, annotations } = await clientRead(uri, options)
+    const { entity, annotations } = await clientRead(rerum.idOf(id), { fresh: true })
     return applyAssertions(entity, annotations)
-}
-
-/**
- * Make a client-path merge indistinguishable from a server-path one, for the
- * fallback above. Assigns undefined rather than deleting, and mutates in place, so
- * the value objects keep the exact shape and SHAPED identity buildValueObject gave them.
- *
- * @param {Object} merged a DEER-shaped document off the client path.
- * @returns {Object} the same document, provenance scrubbed.
- */
-function displayScrubbed(merged) {
-    for (const [key, val] of Object.entries(merged)) {
-        if (IDENTITY_KEYS.includes(key)) { continue }
-        for (const v of [val].flat()) {
-            if (v?.source === undefined) { continue }
-            v.source.citationSource = undefined
-            v.evidence = ""
-        }
-    }
-    return merged
 }

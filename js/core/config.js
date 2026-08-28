@@ -7,6 +7,15 @@
  * TinyNode instance repoint URLS at it and set GENERATOR to their deployment's RERUM agent URI.
  */
 
+/**
+ * The agent the shipped default writes with — the SHARED public sandbox agent.
+ * Exported so rerum.js can tell "this deployment chose the sandbox agent" from
+ * "this deployment never set one", which config.GENERATOR alone cannot answer
+ * once configure() has run.  A deployment that reaches production still using
+ * it is reading every other such deployment's annotations.
+ */
+export const SHIPPED_GENERATOR = "https://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90"
+
 const config = {
     URLS: {
         CREATE: "https://tinydev.rerum.io/create",
@@ -26,7 +35,7 @@ const config = {
 
     // The RERUM agent this deployment writes with — a public identifier.
     // Default is the shared tinydev agent.
-    GENERATOR: "https://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90",
+    GENERATOR: SHIPPED_GENERATOR,
 
     // Base for resolving any relative value in URLS.  Read by absoluteUrl,
     // which falls back to the document base in a browser and has nothing to

@@ -2,7 +2,9 @@
  * @module entity Reactive Entity/Annotation objects and render coordination.
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
- * Ported from releases/rc-1.0/js/entities.js.
+ * Ported from releases/rc-1.0/js/entities.js.  Controls the Entity class
+ * as well as a small Annotation class since the Entity and its Annotations
+ * are intertwined.
  */
 
 import config from './config.js'
@@ -139,6 +141,12 @@ function reserveEditing(...ids) {
 /**
  * The shared way to obtain an Entity: returns the one already coordinating a
  * given id, or constructs (and begins resolving) a new one.
+ *
+ * EVERY caller owes a teardown, because the map holds what it hands out: the
+ * function subscribe() returns if you subscribed, Entity#release() if you did
+ * not.  A read that takes an Entity and never gives it back keeps the document,
+ * the frozen assertions memo and every annotation behind it for the life of the
+ * page.
  *
  * @param {String|Object} id the entity URI or an object carrying one.
  * @param {Object} options
@@ -319,6 +327,16 @@ class Entity extends EventTarget {
         return this.#adopted?.id ?? this.#id
     }
 
+    /**
+     * The RERUM document this Entity holds, RAW on both strategies — the entity
+     * as `GET /v1/id/:_id` returned it on the editing path, the merged document
+     * as `/expanded` returned it on the display one.  Never DEER-shaped: the
+     * shape of a public read must not depend on which strategy an Entity
+     * happens to be on, or an element renders `"Ada"` or `{value:"Ada"}`
+     * depending on whether a form elsewhere on the page reserved the id.
+     *
+     * Read `assertions` for the shaped view.
+     */
     get data() {
         return (this.#adopted !== undefined) ? this.#adopted.data : this.#data
     }
@@ -434,8 +452,9 @@ class Entity extends EventTarget {
      */
     #register = (key) => {
         this.#mapKeys.add(key)
-        // A released Entity must not re-claim map slots.  Unsubscribing does
-        // not cancel an in-flight read.
+        // A released Entity must not re-claim map slots.  Neither unsubscribing
+        // nor release() cancels an in-flight read, so its result still lands
+        // here afterwards and must not put the Entity back in the map.
         if (this.#everSubscribed && this.#subscribers === 0) { return }
         EntityMap.set(key, this)
     }
@@ -579,6 +598,37 @@ class Entity extends EventTarget {
         // Dropped, not just retired: a later resolve() must start a real read
         // rather than hand back a promise whose result will never be applied.
         this.#inFlight = undefined
+    }
+
+    /**
+     * Give up this Entity's EntityMap keys.
+     *
+     * subscribe() returns a teardown and the map drains when the last
+     * subscriber leaves, which covers every consumer that renders.  A consumer
+     * that never subscribes — a script, a probe, a one-shot read — has no
+     * teardown to call, and #register only withholds a map slot from an Entity
+     * that HAS been subscribed to, because an Entity has to be in the map
+     * during construction for getEntity() to dedupe it.  So without this the
+     * un-subscribed case pins the Entity, its document, its frozen assertions
+     * memo and every annotation behind it for the life of the page, with
+     * clearEntities() -- which drops every Entity -- as the only exit.
+     *
+     * This is that teardown.  A no-op while anything is still listening: those
+     * subscribers own the drain, and taking the keys out from under them would
+     * cost the next consumer a duplicate read of a record already in hand.
+     *
+     * The Entity keeps working afterwards.  Whoever holds a reference can
+     * resolve() and subscribe() again; subscribing re-enters the map through
+     * #reclaim, or defers to whoever claimed the record meanwhile.
+     */
+    release() {
+        if (this.#adopted !== undefined) { this.#adopted.release(); return }
+        if (this.#subscribers > 0) { return }
+        // Latching this is what makes the release stick: #register consults it
+        // to refuse a map slot to an Entity that has been let go, so a read
+        // still in flight cannot quietly re-register on arrival.
+        this.#everSubscribed = true
+        this.#release()
     }
 
     /**
@@ -755,7 +805,11 @@ class Entity extends EventTarget {
         this.#error = undefined
         try {
             if (strategy === "display") {
-                const resolved = await expand.forDisplay(this.#id, { fresh })
+                // RAW, not forDisplay(): #data holds the document a read handed
+                // over, and it must be a RERUM document on both strategies.  The
+                // shaping the display path needs happens in `assertions`, which
+                // already does it.
+                const resolved = await expand.forDisplayRaw(this.#id, { fresh })
                 if (generation !== this.#generation) { return }
                 this.#dataStrategy = strategy
                 this.#applying = true
@@ -808,7 +862,11 @@ class Entity extends EventTarget {
 
 /**
  * An object describing a document related to the URI it targets.  Constructing
- * one attaches it to every Entity it targets (self-wiring).
+ * one attaches it to every Entity it targets (self-wiring). An annotation 
+ * attaches itself to every target the page is already coordinating, 
+ * so an annotation returned by one entity's read reaches the other entities 
+ * on the page that it also asserts about.
+ *
  * @class
  */
 class Annotation {
@@ -824,14 +882,6 @@ class Annotation {
         return this.data["@id"] ?? this.data.id // id is primary key
     }
 
-    // Self-wiring: an annotation attaches itself to every target the page is
-    // ALREADY coordinating, so an annotation returned by one entity's read
-    // reaches the other entities on the page that it also asserts about.
-    //
-    // It does not CONSTRUCT an Entity for a target nothing holds.  Constructing
-    // one begins resolving it, so reading entity A pulled entity B — and B's
-    // annotations — over the network as a side effect of a read nobody asked
-    // for.
     #registerTargets = () => {
         let targets = this.data.target
         if (!Array.isArray(targets)) { targets = [targets] }

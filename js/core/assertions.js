@@ -1,6 +1,5 @@
 /**
  * @module assertions Annotation-merge logic and DEER value shaping.
- *
  * @author Bryan Haberberger <bryan.j.haberberger@slu.edu>
  *
  * buildValueObject is lifted from the 0.11 UTILS.expand internals;
@@ -73,6 +72,23 @@ export function isAnnotationType(typeValue) {
 }
 
 /**
+ * The same type list as query clauses, for a Mongo-style `$or`.  Nothing but an
+ * Annotation asserts anything, so a read that leaves this off fetches documents
+ * it can only discard — and expand.queryAll counts them against
+ * config.MAX_RESULTS, so enough of them refuse a read the server merges fine.
+ *
+ * Mirrors the server's own `annoTypeConditions`: each spelling under both `type`
+ * and `@type`.  A Mongo equality match on a scalar also matches an Array
+ * containing it, so a JSON-LD Array-serialized type is covered without a clause
+ * of its own — the same way isAnnotationType's flat() covers it client-side.
+ *
+ * @returns {Array<Object>} clauses for a Mongo-style `$or`.
+ */
+export function annotationTypeClauses() {
+    return [...ANNOTATION_TYPES].flatMap(t => [{ "type": t }, { "@type": t }])
+}
+
+/**
  * Checks if an annotation body asserts itself whole as the server's `bodyValue`.
  *
  * @param {Object} body one body of an annotation.
@@ -113,8 +129,7 @@ export function requireDocument(doc, context = "This read") {
 export function buildValueObject(val, fromAnno = {}) {
     if (val !== null && typeof val === "object" && SHAPED.has(val)) { return val }
     // An empty string is a value someone chose, not a missing one such as a field
-    // a user deliberately cleared.  getValue agrees, so no special case is needed
-    // here — the two used to disagree, and a cleared field was lost between them.
+    // a user deliberately cleared.
     const value = getValue(val)
     const valueObject = {
         source: { citationSource: fromAnno["@id"] ?? fromAnno.id },
@@ -212,22 +227,35 @@ export function shapeValues(obj) {
 }
 
 /**
- * Merge targeting annotations onto an entity and DEER-shape the result.
- * Merged values carry `source.citationSource` = the asserting annotation's @id,
- * which is what keeps the create-vs-update trigger working on the editing path.
- * The entity's own values are preserved alongside annotation values, matching
- * the server's `/expanded` merge (the record's own value first).
+ * Merge targeting annotations onto an entity, WITHOUT shaping the result.
+ *
+ * This is the client's port of the server's `applyExpansionAnnotations`, and
+ * with `provenance: false` it produces the same kind of document `/expanded`
+ * returns: raw merged values, no `{value, source, evidence}` wrapper anywhere.
+ * That is what lets a display read store one document shape whichever path
+ * produced it.
  *
  * @param {Object} entity the resolved entity document, RAW — pass the fetched
  * document, never an already-shaped one.
  * @param {Array<Object>} annotations annotation documents targeting the entity,
  * already filtered to this deployment's.
- * @returns {Object} a new, DEER-shaped object with the assertions applied.
+ * @param {Object} options `provenance` (default true) wraps each merged value in
+ * a value object carrying `source.citationSource` — the asserting annotation's
+ * `@id`, which is what keeps the create-vs-update trigger working on the editing
+ * path.  Pass false for a display-strategy merge, which has no provenance to
+ * carry and must not invent any.
+ * @returns {Object} a new object with the assertions applied.  Not shaped.
  */
-export function applyAssertions(entity, annotations = []) {
-    const assertOn = structuredClone(requireDocument(entity, "applyAssertions"))
+export function mergeAssertions(entity, annotations = [], { provenance = true } = {}) {
+    const assertOn = structuredClone(requireDocument(entity, "mergeAssertions"))
     // A deleted record accepts no assertions.
-    if (Object.hasOwn(assertOn, "__deleted")) { return shapeValues(assertOn) }
+    if (Object.hasOwn(assertOn, "__deleted")) { return assertOn }
+    // Without provenance there is nothing for a value object to carry that
+    // shapeValues will not supply later, so the raw value is merged as-is —
+    // exactly what the server hands back.
+    const contribute = provenance
+        ? (val, anno) => buildValueObject(val, anno)
+        : (val) => val
     for (const anno of inAssertionOrder(annotations)) {
         // An annotation with no id has no citationSource to contribute
         const annoId = anno?.["@id"] ?? anno?.id
@@ -236,7 +264,7 @@ export function applyAssertions(entity, annotations = []) {
         if (anno?.__rerum?.history?.next?.length) { continue }
         const hasBodyValue = typeof anno.bodyValue === "string"
         if (hasBodyValue) {
-            mergeAssertion(assertOn, "bodyValue", buildValueObject(anno.bodyValue, anno))
+            mergeAssertion(assertOn, "bodyValue", contribute(anno.bodyValue, anno))
         }
         // In JSON-LD a one-element Array and the bare value are the same body, so
         // unwrap it before counting bodies.  What follows is about how many
@@ -249,7 +277,7 @@ export function applyAssertions(entity, annotations = []) {
         // A TextualBody asserts itself whole under `bodyValue`, the way the
         // server does.
         if (isTextualBody(body)) {
-            mergeAssertion(assertOn, "bodyValue", buildValueObject(body, anno))
+            mergeAssertion(assertOn, "bodyValue", contribute(body, anno))
             continue
         }
         const keys = Object.keys(body)
@@ -267,10 +295,25 @@ export function applyAssertions(entity, annotations = []) {
             if (config.DEBUG) { console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts identity key '${key}'; ignoring.`) }
             continue
         }
-        const shapeOne = (one) => (one === undefined || one === null) ? one : buildValueObject(one, anno)
+        // A null or undefined member is merged RAW either way and dropped later
+        // by shapeValues.  Skipping it here instead would leave a scalar where
+        // the server produces a one-element array.
+        const shapeOne = (one) => (one === undefined || one === null) ? one : contribute(one, anno)
         mergeAssertion(assertOn, key, Array.isArray(val) ? val.map(shapeOne) : shapeOne(val))
     }
-    return shapeValues(assertOn)
+    return assertOn
+}
+
+/**
+ * Merge targeting annotations onto an entity and DEER-shape the result — the
+ * editing path's read, provenance intact.
+ *
+ * @param {Object} entity the resolved entity document, RAW.
+ * @param {Array<Object>} annotations annotation documents targeting the entity.
+ * @returns {Object} a new, DEER-shaped object with the assertions applied.
+ */
+export function applyAssertions(entity, annotations = []) {
+    return shapeValues(mergeAssertions(entity, annotations))
 }
 
 /**
@@ -283,7 +326,8 @@ export function applyAssertions(entity, annotations = []) {
  *
  * @param {Object} target the document being merged onto, mutated in place.
  * @param {String} key the property the annotation asserts.
- * @param {any} contributed the shaped value, or an array of them.
+ * @param {any} contributed the contributed value, or an array of them — a value
+ * object on the editing path, the raw asserted value on the display one.
  */
 function mergeAssertion(target, key, contributed) {
     if (!Object.hasOwn(target, key)) {
