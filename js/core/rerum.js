@@ -127,12 +127,12 @@ function requireGenerator() {
             generatorWarnedFor = config.GENERATOR
             console.warn(stillShipped.length === Object.keys(SHIPPED_URLS).length
                 ? "You will see everyone's annotations. Set config.GENERATOR to this deployment's own RERUM agent URI before shipping to production."
-                : `config.URLS is repointed at your own TinyNode but config.GENERATOR is still the shared sandbox agent (${SHIPPED_GENERATOR}). Your proxy writes with its OWN agent, so every record you create is filtered back out of every read — writes succeed, your own data never comes back. Set config.GENERATOR to your deployment's RERUM agent URI.`)
+                : `config.URLS is repointed at your own TinyNode but config.GENERATOR is still the shared sandbox agent (${SHIPPED_GENERATOR}). Your proxy writes with its own agent, so every record you create is filtered back out of every read — writes succeed, your own data never comes back. Set config.GENERATOR to your deployment's RERUM agent URI.`)
         }
     }
     else if (proxyWarnedFor !== config.GENERATOR && stillShipped.length > 0) {
         proxyWarnedFor = config.GENERATOR
-        console.warn(`config.GENERATOR is repointed but config.URLS.${stillShipped.join("/")} still point at the shipped sandbox proxy, which uses a shared agent. Every record you create will be generatedBy ${SHIPPED_GENERATOR} and filtered back out of every read — writes succeed, reads come back empty. Repoint URLS at your own TinyNode deployment.`)
+        console.warn(`config.GENERATOR is an independent agent but some or all config.URLS still point at the shipped sandbox proxy.  That proxy will not use your independent agent. Repoint all URLS at your own TinyNode deployment to use your independent agent.`)
     }
     return config.GENERATOR
 }
