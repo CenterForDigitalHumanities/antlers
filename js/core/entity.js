@@ -204,7 +204,6 @@ function clearEntities() {
     entityMap.clear()
     editingIds.clear()
     rerum.clearStale()
-    expand.clearWarnings()
 }
 
 /**

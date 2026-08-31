@@ -14,23 +14,6 @@ import * as rerum from './rerum.js'
 import { annotationTypeClauses, applyAssertions, isAnnotationType, mergeAssertions, requireDocument, shapeValues } from './assertions.js'
 
 /**
- * RERUM deployments already reported as sending no merge-count headers.  The
- * defect is per-deployment and permanent for the session, so warning per read
- * would bury the console under one real problem.
- */
-const uncountedDeployments = new Set()
-
-/**
- * Drop the per-deployment warning bookkeeping.  For teardown and tests only —
- * entity.js clearEntities() calls this, because a Set left populated here
- * outlives the session it belongs to and silently suppresses a warning the next
- * one should see.
- */
-export function clearWarnings() {
-    uncountedDeployments.clear()
-}
-
-/**
  * Keep only the documents that are actually Annotations.
  */
 const onlyAnnotations = (finds) => (Array.isArray(finds) ? finds : [])
@@ -240,16 +223,11 @@ export async function forDisplayRaw(id, { fresh = false } = {}) {
     requireRerumId(uri)
     const { document, gathered, merged } = await rerum.expanded(uri, { fresh })
     if (gathered === null || merged === null) {
-        const deployment = config.ID_BASES.find(base => rerum.canonicalId(uri).startsWith(base)) ?? uri
-        if (!uncountedDeployments.has(deployment)) {
-            uncountedDeployments.add(deployment)
-            console.warn(`${deployment} does not send the Annotations-Gathered/Annotations-Merged headers on /expanded, so the completeness of the server merge cannot be verified. Every display read falls back to the client path: correct, but the cacheable read path is effectively disabled and each read now costs three requests instead of one. Upgrade the RERUM deployment.`)
-        }
         const { entity, annotations } = await clientRead(uri, { fresh })
         return mergeAssertions(entity, annotations, { provenance: false })
     }
     if (gathered !== merged && config.DEBUG) {
-        console.debug(`${uri}: server merged ${merged} of ${gathered} annotations. The rest assert nothing DEER reads (multi-key, multi-body, or protected-key bodies); the client path declines them too — and declines slightly more, refusing 'constructor' and 'prototype' bodies the server merges.`)
+        console.debug(`${uri}: server merged ${merged} of ${gathered} annotations. The rest assert nothing DEER reads (multi-key, multi-body, or protected-key bodies).`)
     }
     return requireDocument(document, `The expanded read of ${uri}`)
 }

@@ -49,21 +49,13 @@ function castValue(prop, asType) {
  * Dig the usable value out of a property that may be a primitive, an object
  * carrying a value-ish key, or an array of either.
  *
+ * An empty string is a VALUE — a field a user deliberately cleared reads back as "".
+ *
  * @param {any} property the property value to normalize.
  * @param {Array<String>|String} alsoPeek additional keys to check for a nested value.
  * @param {String} [asType] optional cast: STRING | NUMBER | INTEGER | BOOLEAN.
- * @returns {any} the normalized value.  Arrayness is PRESERVED: an array in
- * yields an array out, each member normalized (peeked, and cast when asked)
- * by this same function, and a peeked one-member array stays a one-member
- * array.  The member rule does not depend on whether a cast was requested —
- * a return SHAPE that changed with `asType` was an accident waiting for
- * template bindings.
+ * @returns {any} the normalized value.  Arrayness is preserved.
  *
- * An empty string is a VALUE, not a missing one — a field a user deliberately
- * cleared reads back as "".  0.11 returned undefined for it here while
- * buildValueObject preserved it, so a cleared field survived shaping and then
- * vanished the moment a template binding normalized it.  Only null and
- * undefined are missing.
  */
 export function getValue(property, alsoPeek = [], asType) {
     let prop
@@ -96,10 +88,6 @@ export function getValue(property, alsoPeek = [], asType) {
 
 /**
  * Attempt to discover a readable label from the object.
- *
- * Nullish coalescing throughout, not `||`: a label of 0 or "" is a label
- * someone chose.  `||` reported both as unlabeled, which is the same falsy-vs-
- * missing confusion getValue carried for the empty string.
  *
  * @param {any} obj the object to label.
  * @param {String} noLabel fallback when no label is discoverable.
