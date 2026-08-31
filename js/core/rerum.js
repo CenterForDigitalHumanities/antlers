@@ -15,19 +15,19 @@
  * without every call site having to remember to ask for it.
  */
 
-import config, { asInteger, SHIPPED_GENERATOR, SHIPPED_URLS } from './config.js'
+import config, { asInteger, INTEGER_DEFAULTS, SHIPPED_GENERATOR, SHIPPED_URLS } from './config.js'
 
 const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8" }
 
 /**
- * The generator value the shipped-generator warning was last said for, so it is
- * said once and not once per read.
+ * The generator-and-URLS state the shipped-generator warning was last said for,
+ * so it is said once and not once per read.
  */
 let generatorWarnedFor
 
 /**
- * The generator value the mismatched-proxy warning was last said for, latched
- * separately so repointing URLS re-arms it.
+ * The generator-and-URLS state the mismatched-proxy warning was last said for,
+ * latched separately so repointing URLS re-arms it.
  */
 let proxyWarnedFor
 
@@ -122,16 +122,17 @@ function requireGenerator() {
     const stillShipped = Object.entries(SHIPPED_URLS)
         .filter(([name, url]) => config.URLS[name] === url)
         .map(([name]) => name)
+    const configState = `${config.GENERATOR}|${stillShipped.join(",")}`
     if (isShippedGenerator) {
-        if (generatorWarnedFor !== config.GENERATOR) {
-            generatorWarnedFor = config.GENERATOR
+        if (generatorWarnedFor !== configState) {
+            generatorWarnedFor = configState
             console.warn(stillShipped.length === Object.keys(SHIPPED_URLS).length
                 ? "You will see everyone's annotations. Set config.GENERATOR to this deployment's own RERUM agent URI before shipping to production."
                 : `config.URLS is repointed at your own TinyNode but config.GENERATOR is still the shared sandbox agent (${SHIPPED_GENERATOR}). Your proxy writes with its own agent, so every record you create is filtered back out of every read — writes succeed, your own data never comes back. Set config.GENERATOR to your deployment's RERUM agent URI.`)
         }
     }
-    else if (proxyWarnedFor !== config.GENERATOR && stillShipped.length > 0) {
-        proxyWarnedFor = config.GENERATOR
+    else if (proxyWarnedFor !== configState && stillShipped.length > 0) {
+        proxyWarnedFor = configState
         console.warn(`config.GENERATOR is an independent agent but some or all config.URLS still point at the shipped sandbox proxy.  That proxy will not use your independent agent. Repoint all URLS at your own TinyNode deployment to use your independent agent.`)
     }
     return config.GENERATOR
@@ -390,10 +391,10 @@ export async function query(body, { limit = config.LIMIT, skip = config.SKIP } =
     const url = new URL(absoluteUrl(config.URLS.QUERY))
     // This stops clients from silently truncating.
     // It is a guard against a known RERUM setting that keeps paging mechanics honest.
-    limit = Math.max(1, asInteger(limit, config.LIMIT))
+    limit = Math.max(1, asInteger(limit, INTEGER_DEFAULTS.LIMIT))
     if (limit > config.MAX_LIMIT) limit = Math.max(1, config.MAX_LIMIT)
     url.searchParams.set("limit", limit)
-    url.searchParams.set("skip", Math.max(0, asInteger(skip, config.SKIP)))
+    url.searchParams.set("skip", Math.max(0, asInteger(skip, INTEGER_DEFAULTS.SKIP)))
     const target = url.toString()
     return fetcher(target, {
         method: "POST",

@@ -70,7 +70,7 @@ const config = {
 /**
  * The config values that are counts, and what each falls back to.
  */
-const INTEGER_DEFAULTS = Object.freeze({ LIMIT: 50, MAX_LIMIT: 500, SKIP: 0, MAX_RESULTS: 1000 })
+export const INTEGER_DEFAULTS = Object.freeze({ LIMIT: 50, MAX_LIMIT: 500, SKIP: 0, MAX_RESULTS: 1000 })
 
 /**
  * A config count, always an integer.  A fraction drops its decimal; anything

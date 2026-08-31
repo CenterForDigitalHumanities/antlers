@@ -9,7 +9,7 @@
  * effort with RERUM API services and DEER client functionality.
  */
 
-import config from './config.js'
+import config, { asInteger, INTEGER_DEFAULTS } from './config.js'
 import * as rerum from './rerum.js'
 import { annotationTypeClauses, applyAssertions, isAnnotationType, mergeAssertions, requireDocument, shapeValues } from './assertions.js'
 
@@ -75,10 +75,11 @@ const escapeRegex = (literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 async function queryAll(body, label) {
     // Guarded: a deployment that configures LIMIT at 0 or below would otherwise
     // page forever, asking for nothing each time.
-    let page = Math.max(1, config.LIMIT)
     // This stops clients from silently truncating.
     // It is a guard against a known RERUM setting that keeps paging mechanics honest.
-    if (page > config.MAX_LIMIT) page = Math.max(1, config.MAX_LIMIT)
+    const maxPage = Math.max(1, asInteger(config.MAX_LIMIT, INTEGER_DEFAULTS.MAX_LIMIT))
+    const page = Math.min(maxPage, Math.max(1, asInteger(config.LIMIT, INTEGER_DEFAULTS.LIMIT)))
+    const ceiling = Math.max(1, asInteger(config.MAX_RESULTS, INTEGER_DEFAULTS.MAX_RESULTS))
     const all = []
     const seen = new Set()
     // Counts RAW documents fetched, not deduped ones.
@@ -97,8 +98,8 @@ async function queryAll(body, label) {
             all.push(doc)
         }
         if (list.length < page) { return all }
-        if (fetched > config.MAX_RESULTS) {
-            throw new RangeError(`${label}: more than ${config.MAX_RESULTS} documents fetched without reaching the end of this read.`)
+        if (fetched > ceiling) {
+            throw new RangeError(`${label}: more than ${ceiling} documents fetched without reaching the end of this read.`)
         }
     }
 }
