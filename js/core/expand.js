@@ -78,7 +78,7 @@ async function queryAll(body, label) {
     let page = Math.max(1, config.LIMIT)
     // This stops clients from silently truncating.
     // It is a guard against a known RERUM setting that keeps paging mechanics honest.
-    if (page > config.MAX_LIMIT) page = config.MAX_LIMIT
+    if (page > config.MAX_LIMIT) page = Math.max(1, config.MAX_LIMIT)
     const all = []
     const seen = new Set()
     // Counts RAW documents fetched, not deduped ones.
@@ -248,7 +248,7 @@ export async function forDisplayRaw(id, { fresh = false } = {}) {
         return mergeAssertions(entity, annotations, { provenance: false })
     }
     if (gathered !== merged && config.DEBUG) {
-        console.debug(`${uri}: server merged ${merged} of ${gathered} annotations. The rest assert nothing DEER reads (multi-key, multi-body, or protected-key bodies); the client path declines them identically.`)
+        console.debug(`${uri}: server merged ${merged} of ${gathered} annotations. The rest assert nothing DEER reads (multi-key, multi-body, or protected-key bodies); the client path declines them too — and declines slightly more, refusing 'constructor' and 'prototype' bodies the server merges.`)
     }
     return requireDocument(document, `The expanded read of ${uri}`)
 }

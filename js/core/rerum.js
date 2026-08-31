@@ -204,11 +204,15 @@ function markStale(...ids) {
             : (id?.["@id"] ?? id?.id
                 ?? ((typeof id?.source === "string") ? id.source : id?.source?.["@id"] ?? id?.source?.id))
         if (typeof uri !== "string" || uri.length === 0) { continue }
-        // An Annotation may target a FRAGMENT of a record (`…#xywh=0,0,10,10`)
-        const key = canonicalId(uri).split("#")[0]
-        if (!isRerumId(key)) { continue }
-        staleIds.delete(key)
-        staleIds.set(key, { expires, refreshed: new Set() })
+        // A record with a RERUM Slug answers to TWO URIs, and a write invalidates both.
+        for (const answersTo of [uri, slugUriOf(id)]) {
+            if (typeof answersTo !== "string") { continue }
+            // An Annotation may target a FRAGMENT of a record (`…#xywh=0,0,10,10`)
+            const key = canonicalId(answersTo).split("#")[0]
+            if (!isRerumId(key)) { continue }
+            staleIds.delete(key)
+            staleIds.set(key, { expires, refreshed: new Set() })
+        }
     }
     sweepStale()
 }
@@ -387,7 +391,7 @@ export async function query(body, { limit = config.LIMIT, skip = config.SKIP } =
     // This stops clients from silently truncating.
     // It is a guard against a known RERUM setting that keeps paging mechanics honest.
     limit = Math.max(1, asInteger(limit, config.LIMIT))
-    if (limit > config.MAX_LIMIT) limit = config.MAX_LIMIT
+    if (limit > config.MAX_LIMIT) limit = Math.max(1, config.MAX_LIMIT)
     url.searchParams.set("limit", limit)
     url.searchParams.set("skip", Math.max(0, asInteger(skip, config.SKIP)))
     const target = url.toString()

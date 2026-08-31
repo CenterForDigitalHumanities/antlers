@@ -295,7 +295,7 @@ class Entity extends EventTarget {
         if (typeof id !== "string" || id.length === 0) { throw new Error("Entity must have an id") }
         if (entityMap.has(rerum.canonicalId(id))) { throw new Error(`Entity ${id} already exists. Use getEntity() to share it.`) }
         this.#annotations = new Map()
-        this.#strategy = (strategy === "editing") ? "editing" : "display"
+        this.#strategy = (strategy === "editing" || editingIds.has(rerum.canonicalId(id))) ? "editing" : "display"
         this.#id = id
         this.data = entity
     }
@@ -341,6 +341,11 @@ class Entity extends EventTarget {
      * The RERUM document this Entity holds, RAW on both strategies — the entity
      * as `GET /v1/id/:_id` returned it on the editing path, the merged document
      * as `/expanded` returned it on the display one.  Never DEER-shaped.
+     *
+     * Treat it as read-only; assign a NEW document to change it.  Mutating a
+     * nested value in place bypasses the no-op suppression and the memo
+     * invalidation, so no `update` announces and a later identical-looking
+     * assignment is swallowed.
      *
      * Read `assertions` for the shaped view.
      */
@@ -447,7 +452,7 @@ class Entity extends EventTarget {
         if (isFirstData) {
             // Construction begins resolution.  That is a first render, not a
             // reload, and the two must stay distinguishable.
-            this.resolve()
+            this.resolve({ fresh: this.#strategy === "editing" })
             return
         }
         if (!sameId(oldId, this.#id) && !this.#applying) {

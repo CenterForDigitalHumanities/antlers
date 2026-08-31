@@ -32,7 +32,11 @@ export const IDENTITY_KEYS = ["@id", "id", "_id", "@type", "type", "@context", "
 
 /**
  * Keys an Annotation may never assert onto an entity and that never survive
- * shaping.  The prototype-pollution corner of the server's PROTECTED_EXPANSION_KEYS.
+ * shaping.  A SUPERSET of the server's prototype-pollution guard: the server's
+ * PROTECTED_EXPANSION_KEYS protects only `__proto__`, while DEER also refuses
+ * `constructor` and `prototype` — so for those two keys the server merges (and
+ * counts) an assertion the client declines, and its Annotations-Merged header
+ * can run one over the client's citation count.
  */
 export const FORBIDDEN_KEYS = new Set(["__proto__", "constructor", "prototype"])
 
