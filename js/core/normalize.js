@@ -89,6 +89,7 @@ export function getValue(property, alsoPeek = [], asType) {
     } else {
         prop = property
     }
+    if (Array.isArray(prop)) { return prop.map(p => getValue(p, alsoPeek, asType)) }
     if (asType) { prop = castValue(prop, asType) }
     return prop
 }

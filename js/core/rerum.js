@@ -391,8 +391,10 @@ export async function query(body, { limit = config.LIMIT, skip = config.SKIP } =
     const url = new URL(absoluteUrl(config.URLS.QUERY))
     // This stops clients from silently truncating.
     // It is a guard against a known RERUM setting that keeps paging mechanics honest.
-    limit = Math.max(1, asInteger(limit, INTEGER_DEFAULTS.LIMIT))
-    if (limit > config.MAX_LIMIT) limit = Math.max(1, config.MAX_LIMIT)
+    // Both bounds go through asInteger so this agrees with expand.queryAll,
+    // which pages against the same two values.
+    const maxLimit = Math.max(1, asInteger(config.MAX_LIMIT, INTEGER_DEFAULTS.MAX_LIMIT))
+    limit = Math.min(maxLimit, Math.max(1, asInteger(limit, INTEGER_DEFAULTS.LIMIT)))
     url.searchParams.set("limit", limit)
     url.searchParams.set("skip", Math.max(0, asInteger(skip, INTEGER_DEFAULTS.SKIP)))
     const target = url.toString()

@@ -705,17 +705,33 @@ class Entity extends EventTarget {
         // A per-subscription closure
         const live = (ev) => (typeof handler === "function") ? handler(ev) : handler.handleEvent(ev)
         for (const action of LIFECYCLE) { this.addEventListener(action, live) }
+        const stop = () => { for (const action of LIFECYCLE) { this.removeEventListener(action, live) } }
         if (this.settled) {
-            if (this.error === undefined) {
-                call(this.#event("update", this.assertions))
-                // Replay `complete` too.  An element that renders on it would
-                // otherwise render only for the first subscriber.
-                call(this.#event("complete"))
-            } else {
+            if (this.error !== undefined) {
                 call(this.#event("error", this.error))
+                return stop
             }
+            // Shaped BEFORE the replay and inside the try, the way #announceShaped
+            // does it.  Read inline as an argument this throws out of subscribe(),
+            // which counts the subscriber and registers its listener and then hands
+            // the caller an exception instead of the teardown -- pinning the Entity
+            // in the map for the life of the page.
+            let payload
+            try {
+                payload = this.assertions
+            } catch (err) {
+                // A document this Entity cannot shape is a failed resolution.
+                // #fail announces `error` to every listener, this one included,
+                // so there is nothing left to replay.
+                this.#fail(err)
+                return stop
+            }
+            call(this.#event("update", payload))
+            // Replay `complete` too.  An element that renders on it would
+            // otherwise render only for the first subscriber.
+            call(this.#event("complete"))
         }
-        return () => { for (const action of LIFECYCLE) { this.removeEventListener(action, live) } }
+        return stop
     }
 
     /**
@@ -728,7 +744,8 @@ class Entity extends EventTarget {
      * @param {Annotation} annotation the annotation to hold.  Its id may be
      * recorded as `@id` or `id`; Annotation#id reads either.
      * @returns {Boolean} whether it was taken — false for an annotation with no
-     * id, which has no stable identity to key on.
+     * id, which has no stable identity to key on, and false for one already
+     * superseded by the version this Entity holds.
      */
     attachAnnotation(annotation) {
         if (this.#adopted !== undefined) { return this.#adopted.attachAnnotation(annotation) }
@@ -741,7 +758,7 @@ class Entity extends EventTarget {
         if (held !== undefined && sameId(held.id, annotation.id) && objectMatch(held.data, annotation.data)) { return true }
         const storageTail = (id) => { const c = rerum.canonicalId(id); return c.slice(c.lastIndexOf("/") + 1) }
         if (held !== undefined && !sameId(held.id, annotation.id)
-            && storageTail(annotation.id) < storageTail(held.id)) { return true }
+            && storageTail(annotation.id) < storageTail(held.id)) { return false }
         this.#annotations.set(root, annotation)
         this.#assertions = undefined
         if (!this.#rebuilding && this.#settled && this.#error === undefined) { this.#announceShaped("update") }
@@ -793,6 +810,12 @@ class Entity extends EventTarget {
      * retargeted, or has stopped matching the generator filter, and merging it
      * again resurrects a value the data no longer asserts.
      *
+     * Announces `update` and nothing else.  Settling and `complete` belong to
+     * #resolveURI, which is the only caller and the only scope holding the
+     * generation this resolution was started under — a subscriber handling the
+     * `update` below can fail this Entity or start a newer read, and either one
+     * makes a `complete` from here a lie.
+     *
      * @param {Array<Object>} annotations annotation documents targeting this id.
      * @param {Object} [before] the shaped view subscribers last saw, captured by
      * the resolution before it applied anything.
@@ -811,8 +834,6 @@ class Entity extends EventTarget {
         if (before === undefined || !objectMatch(before, this.assertions)) {
             this.#announce("update", this.assertions)
         }
-        this.#settled = true
-        this.#announce("complete")
     }
 
     #resolveURI = async (fresh) => {
@@ -851,6 +872,9 @@ class Entity extends EventTarget {
             }
             if (generation !== this.#generation) { return }
             this.#findAssertions(annotations, before)
+            if (generation !== this.#generation) { return }
+            this.#settled = true
+            if (this.#error === undefined) { this.#announce("complete") }
         } catch (err) {
             if (generation !== this.#generation) { return }
             this.#fail(err)

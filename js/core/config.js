@@ -92,10 +92,14 @@ export function asInteger(value, fallback) {
  * replaces wholesale and is normalized to trailing-slash https form as the URL
  * parser spells it.
  * @returns {Object} the live config object.
- * @throws {TypeError} when an ID_BASES member is not a non-empty absolute URL string.
+ * @throws {TypeError} when ID_BASES is not an Array, or when one of its members
+ * is not a non-empty absolute URL string.
  */
 export function configure(overrides = {}) {
     const { URLS, ID_BASES, ...rest } = overrides
+    if (ID_BASES !== undefined && !Array.isArray(ID_BASES)) {
+        throw new TypeError(`config.ID_BASES must be an Array of URI prefix strings, and got ${JSON.stringify(ID_BASES)}. ID_BASES is the support boundary — it decides which URIs DEER will read at all.`)
+    }
     const normalizedBases = ID_BASES?.map(base => {
         if (typeof base !== "string" || base.length === 0) {
             throw new TypeError(`config.ID_BASES members must be non-empty URI prefix strings, and got ${JSON.stringify(base)}. ID_BASES is the support boundary — it decides which URIs DEER will read at all.`)
