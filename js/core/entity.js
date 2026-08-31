@@ -11,7 +11,7 @@
 import config from './config.js'
 import * as rerum from './rerum.js'
 import * as expand from './expand.js'
-import { applyAssertions, markShaped, shapeValues } from './assertions.js'
+import { applyAssertions, markShaped, requireDocument, shapeValues } from './assertions.js'
 
 const entityMap = new Map()
 
@@ -743,13 +743,13 @@ class Entity extends EventTarget {
      *
      * @param {Annotation} annotation the annotation to hold.  Its id may be
      * recorded as `@id` or `id`; Annotation#id reads either.
-     * @returns {Boolean} whether it was taken — false for an annotation with no
-     * id, which has no stable identity to key on, and false for one already
-     * superseded by the version this Entity holds.
+     * @returns {Boolean} whether it was taken — false for an annotation whose id
+     * is not a URI string, which has no stable identity to key on, and false for
+     * one already superseded by the version this Entity holds.
      */
     attachAnnotation(annotation) {
         if (this.#adopted !== undefined) { return this.#adopted.attachAnnotation(annotation) }
-        if (annotation.id === undefined || annotation.id === null) { return false }
+        if (typeof annotation.id !== "string") { return false }
         if (this.#strategy === "display") { return false }
         const root = versionRootId(annotation)
         const held = this.#annotations.get(root)
@@ -909,9 +909,12 @@ class Entity extends EventTarget {
 class Annotation {
     /**
      * @param {Object} annotation document asserting a value or relationship.
+     * @throws {TypeError} when the document is not a usable object.  Checked here
+     * rather than left to #registerTargets, which would report it as a bare
+     * "Cannot read properties of null" from a property read.
      */
     constructor(annotation) {
-        this.data = annotation
+        this.data = requireDocument(annotation, "Constructing an Annotation")
         this.#registerTargets()
     }
 
