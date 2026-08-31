@@ -739,6 +739,9 @@ class Entity extends EventTarget {
         // Re-attaching what is already held asserts nothing new, and must not
         // invalidate or re-announce on every read that happens to return it.
         if (held !== undefined && sameId(held.id, annotation.id) && objectMatch(held.data, annotation.data)) { return true }
+        const storageTail = (id) => { const c = rerum.canonicalId(id); return c.slice(c.lastIndexOf("/") + 1) }
+        if (held !== undefined && !sameId(held.id, annotation.id)
+            && storageTail(annotation.id) < storageTail(held.id)) { return true }
         this.#annotations.set(root, annotation)
         this.#assertions = undefined
         if (!this.#rebuilding && this.#settled && this.#error === undefined) { this.#announceShaped("update") }
