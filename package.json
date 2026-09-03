@@ -1,0 +1,7 @@
+{
+    "name": "antlers",
+    "version": "2.0.0-alpha",
+    "description": "DEER 2.0 — Data Encoding and Exhibition for RERUM",
+    "private": true,
+    "type": "module"
+}

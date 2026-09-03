@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>DEER 2.0 Test Bench</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://unpkg.com/chota@latest">
+    <style>
+        body { max-width: 70rem; margin-inline: auto; padding-inline: 1rem; }
+        section { border: 1px solid var(--color-lightGrey); border-radius: 4px; padding: 1rem; margin-block: 1.5rem; }
+        h2 { margin-bottom: 0.25rem; }
+        .hint { color: var(--color-darkGrey); font-size: 0.85rem; margin-block: 0.25rem 0.75rem; }
+        .group { display: grid; gap: 0.35rem; margin-bottom: 0.25rem; }
+        .preview { background: var(--color-lightGrey); padding: 0.35rem 0.5rem; font-size: 0.8rem; min-height: 1.6rem; margin-bottom: 0.75rem; overflow-wrap: anywhere; }
+        .panes { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); }
+        pre.out { background: #1d1f21; color: #c5c8c6; padding: 0.75rem; overflow: auto; max-height: 26rem; font-size: 0.75rem; }
+        .tag { display: inline-block; background: var(--color-primary); color: #fff; border-radius: 3px; padding: 0 0.4rem; font-size: 0.75rem; }
+        label { display: block; }
+    </style>
+</head>
+
+<body>
+    <h1>DEER 2.0 Test Bench</h1>
+    <p class="hint">
+        Scratch page for creating and annotating test entities against
+        <code>devstore.rerum.io</code> via <code>tinydev.rerum.io</code>, using the local
+        <code>/js/</code> source. Everything made here is tagged
+        <code>ANTLERS_2_0_TEST_AGENT</code> on both the entity (<code>creator</code>) and every
+        annotation (<code>deer-creator</code>), so it can be told apart from the rest of the shared
+        sandbox — the sandbox <code>generator</code> is shared by every app and cannot discriminate.
+    </p>
+
+    <!-- ============================================================
+         1. CREATE — the photo-album use case from antlers#1.
+         No deer-item-type, so every dirty input becomes its own
+         Annotation targeting the new entity.
+         ============================================================ -->
+    <section>
+        <h2>1. Create a Person</h2>
+        <p class="hint">
+            Creates one entity plus one Annotation per dirty input. <code>name</code> is in
+            <code>DEER.PRIMITIVES</code>, so it lands on the entity <em>and</em> as an annotation —
+            that is deliberate here, it reproduces the heterogeneous merge documented in antlers#1.
+        </p>
+
+        <form id="personForm" deer-type="Person" deer-context="http://schema.org"
+              deer-creator="ANTLERS_2_0_TEST_AGENT">
+
+            <input type="hidden" deer-key="creator" value="ANTLERS_2_0_TEST_AGENT">
+            <input type="hidden" deer-key="targetCollection" value="AntlersTestPeople">
+
+            <label for="p-name">Name</label>
+            <input type="text" id="p-name" deer-key="name" placeholder="Ada Lovelace">
+
+            <label for="p-desc">Description</label>
+            <textarea id="p-desc" deer-key="description" placeholder="A short description."></textarea>
+
+            <label>Email <span class="tag">Set</span></label>
+            <input type="hidden" deer-key="email" deer-input-type="Set" deer-array-delimeter="|^|">
+            <div class="group" data-array-group>
+                <input type="email" placeholder="one@example.org">
+                <input type="email" placeholder="two@example.org">
+                <input type="email" placeholder="three@example.org">
+            </div>
+            <pre class="preview"></pre>
+
+            <label>Address <span class="tag">Set</span></label>
+            <input type="hidden" deer-key="address" deer-input-type="Set" deer-array-delimeter="|^|">
+            <div class="group" data-array-group>
+                <input type="text" placeholder="221B Baker Street, London">
+                <input type="text" placeholder="Second address">
+            </div>
+            <pre class="preview"></pre>
+
+            <label>Phone Number <span class="tag">Set</span></label>
+            <input type="hidden" deer-key="telephone" deer-input-type="Set" deer-array-delimeter="|^|">
+            <div class="group" data-array-group>
+                <input type="tel" placeholder="+1 314 555 0100">
+                <input type="tel" placeholder="+1 314 555 0101">
+            </div>
+            <pre class="preview"></pre>
+
+            <label>Photo URIs <span class="tag">Set</span></label>
+            <p class="hint">The family-album depictions. Each photo has its own URI.</p>
+            <input type="hidden" deer-key="depiction" deer-input-type="Set" deer-array-delimeter="|^|">
+            <div class="group" data-array-group>
+                <input type="url" placeholder="https://example.org/photos/1.jpg">
+                <input type="url" placeholder="https://example.org/photos/2.jpg">
+                <input type="url" placeholder="https://example.org/photos/3.jpg">
+            </div>
+            <pre class="preview"></pre>
+
+            <input class="button primary" type="submit" value="Create Person">
+        </form>
+    </section>
+
+    <!-- ============================================================
+         2. RESULT — renders whatever the form above just saved.
+         ============================================================ -->
+    <section>
+        <h2>2. Result</h2>
+        <p class="hint">Renders the entity the form above just wrote, via the built-in <code>entity</code> template.</p>
+        <deer-view deer-listening="personForm" deer-template="entity">Nothing created yet.</deer-view>
+    </section>
+
+    <!-- ============================================================
+         3. ANNOTATE — load an existing entity and add more
+         annotations to it. Setting deer-id triggers prefill.
+         ============================================================ -->
+    <section>
+        <h2>3. Annotate an existing entity</h2>
+        <p class="hint">
+            Paste an entity URI (or use <em>Use last created</em>) to load it. Existing values prefill
+            from its annotations; saving updates those and creates new ones for the empty fields.
+            This is the create-vs-update path that depends on <code>source.citationSource</code>.
+        </p>
+
+        <div class="group">
+            <input type="url" id="annotateTarget" placeholder="https://devstore.rerum.io/v1/id/...">
+        </div>
+        <p>
+            <button class="button" type="button" id="loadTarget">Load entity</button>
+            <button class="button outline" type="button" id="useLast">Use last created</button>
+        </p>
+
+        <form id="annotateForm" deer-type="Person" deer-context="http://schema.org"
+              deer-creator="ANTLERS_2_0_TEST_AGENT">
+
+            <label for="a-job">Job Title</label>
+            <input type="text" id="a-job" deer-key="jobTitle" placeholder="Mathematician">
+
+            <label for="a-birth">Birth Date</label>
+            <input type="date" id="a-birth" deer-key="birthDate">
+
+            <label for="a-note">Note</label>
+            <textarea id="a-note" deer-key="note" placeholder="Anything worth asserting."></textarea>
+
+            <label>More Photo URIs <span class="tag">Set</span></label>
+            <input type="hidden" deer-key="depiction" deer-input-type="Set" deer-array-delimeter="|^|">
+            <div class="group" data-array-group>
+                <input type="url" placeholder="https://example.org/photos/4.jpg">
+                <input type="url" placeholder="https://example.org/photos/5.jpg">
+            </div>
+            <pre class="preview"></pre>
+
+            <input class="button primary" type="submit" value="Save Annotations">
+        </form>
+    </section>
+
+    <!-- ============================================================
+         4. COLLECTION — everything made by this page.
+         ============================================================ -->
+    <section>
+        <h2>4. Test collection</h2>
+        <p class="hint">
+            Every entity created here carries <code>targetCollection = AntlersTestPeople</code>.
+            Reload the page after creating to refresh this list.
+        </p>
+        <deer-view deer-collection="AntlersTestPeople" deer-template="list" deer-link="#">
+            Loading collection...
+        </deer-view>
+    </section>
+
+    <!-- ============================================================
+         5. INSPECTOR — raw vs /expanded, plus the annotations that
+         fed it. This is the fixture-capture tool for antlers#1.
+         ============================================================ -->
+    <section>
+        <h2>5. Inspector</h2>
+        <p class="hint">
+            Fetches the plain entity, the server-side <code>/expanded</code> form, and the Annotations
+            targeting it. Use this to see exactly which annotation <code>@id</code>s the expanded
+            response drops.
+        </p>
+
+        <div class="group">
+            <input type="url" id="inspectTarget" placeholder="https://devstore.rerum.io/v1/id/...">
+        </div>
+        <p>
+            <button class="button primary" type="button" id="inspectGo">Inspect</button>
+            <button class="button outline" type="button" id="inspectLast">Use last created</button>
+            <button class="button outline" type="button" id="copyFixture">Copy fixture JSON</button>
+        </p>
+        <p id="inspectSummary" class="hint"></p>
+
+        <div class="panes">
+            <div>
+                <h3>Raw entity</h3>
+                <pre class="out" id="outRaw">-</pre>
+            </div>
+            <div>
+                <h3>/expanded</h3>
+                <pre class="out" id="outExpanded">-</pre>
+            </div>
+            <div>
+                <h3>Targeting annotations</h3>
+                <pre class="out" id="outAnnos">-</pre>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        /**
+         * Multi-value inputs, today's way.
+         *
+         * DEER has no array-aware input, so an array is carried as a delimited string on a hidden
+         * input that must be the immediately-preceding element sibling of the container holding the
+         * real inputs. That positional coupling is exactly what deer#125 and the `deer-input`
+         * element in antlers#1 are meant to delete. One generic handler here instead of the
+         * three near-identical copies in cookbook/list_data_capture.html.
+         */
+        const ARRAY_INPUTS = 'input[type="text"], input[type="url"], input[type="email"], input[type="tel"]'
+
+        function syncArrayGroup(container) {
+            const tracker = container.previousElementSibling
+            if (!tracker || tracker.type !== 'hidden') {
+                console.error('Array group has no hidden tracker as previousElementSibling.', container)
+                return
+            }
+            const delim = tracker.getAttribute('deer-array-delimeter') ?? ','
+            const values = Array.from(container.querySelectorAll(ARRAY_INPUTS))
+                .map(input => input.value.trim())
+                .filter(Boolean)
+            const joined = values.join(delim)
+
+            tracker.value = joined
+            tracker.setAttribute('value', joined)
+            // Setting .value programmatically does not fire 'input', so DEER would never mark this
+            // tracker dirty on an update form. Dispatch it so both the input and the form are dirty.
+            tracker.dispatchEvent(new Event('input', { bubbles: true }))
+
+            const preview = container.nextElementSibling
+            if (preview?.classList.contains('preview')) preview.textContent = joined || '(empty)'
+        }
+
+        document.querySelectorAll('[data-array-group]').forEach(container => {
+            container.addEventListener('input', () => syncArrayGroup(container))
+        })
+
+        /**
+         * Remember the last entity this page created so the other sections can target it.
+         * deer-created carries the finished entity.
+         */
+        let lastCreated = sessionStorage.getItem('antlers-last-created') ?? ''
+
+        addEventListener('deer-created', event => {
+            const id = event.detail?.['@id'] ?? event.detail?.id
+            if (!id) return
+            lastCreated = id
+            sessionStorage.setItem('antlers-last-created', id)
+            console.log('deer-created ->', id)
+        })
+
+        addEventListener('deer-updated', event => {
+            console.log('deer-updated ->', event.detail?.['@id'] ?? event.detail?.id)
+        })
+
+        const requireLast = () => {
+            if (!lastCreated) {
+                alert('Nothing created in this session yet. Create a Person first, or paste a URI.')
+                return null
+            }
+            return lastCreated
+        }
+
+        document.getElementById('useLast').addEventListener('click', () => {
+            const id = requireLast()
+            if (id) document.getElementById('annotateTarget').value = id
+        })
+
+        document.getElementById('loadTarget').addEventListener('click', () => {
+            const uri = document.getElementById('annotateTarget').value.trim()
+            if (!uri) return
+            // DEER's MutationObserver watches deer-id and re-runs the form, prefilling from the entity.
+            document.getElementById('annotateForm').setAttribute('deer-id', uri)
+        })
+
+        /* ---------------------------------------------------------- Inspector */
+
+        const normalize = uri => uri.trim().replace(/^http:/, 'https:').replace(/\/$/, '')
+        const show = (id, value) => {
+            document.getElementById(id).textContent =
+                typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+        }
+
+        let lastFixture = null
+
+        async function inspect(uri) {
+            const id = normalize(uri)
+            if (!id) return
+            const summary = document.getElementById('inspectSummary')
+            summary.textContent = 'Fetching...'
+            show('outRaw', '...'); show('outExpanded', '...'); show('outAnnos', '...')
+
+            try {
+                const [rawRes, expRes, annoRes] = await Promise.all([
+                    fetch(id, { cache: 'reload' }),
+                    fetch(id + '/expanded', { cache: 'reload' }),
+                    fetch('https://tinydev.rerum.io/app/query?limit=100&skip=0', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json; charset=utf-8' },
+                        body: JSON.stringify({
+                            '$or': [{ target: id }, { target: id.replace(/^https:/, 'http:') }],
+                            '__rerum.history.next': { '$exists': true, '$size': 0 }
+                        })
+                    })
+                ])
+
+                const raw = await rawRes.json()
+                const expanded = await expRes.json()
+                const annos = await annoRes.json()
+
+                const gathered = expRes.headers.get('Annotations-Gathered')
+                const merged = expRes.headers.get('Annotations-Merged')
+
+                show('outRaw', raw)
+                show('outExpanded', expanded)
+                show('outAnnos', annos.map(a => ({
+                    '@id': a['@id'],
+                    creator: a.creator,
+                    generatedBy: a.__rerum?.generatedBy,
+                    body: a.body
+                })))
+
+                // The point of this page: does any annotation @id survive into /expanded?
+                const expandedText = JSON.stringify(expanded)
+                const survivors = annos
+                    .map(a => a['@id'])
+                    .filter(Boolean)
+                    .filter(annoId => expandedText.includes(annoId.replace(/^https?:/, '')))
+
+                summary.textContent =
+                    'Annotations-Gathered: ' + gathered + ' | Annotations-Merged: ' + merged +
+                    ' | query found ' + annos.length +
+                    ' | annotation @ids present in /expanded: ' + survivors.length + ' of ' + annos.length
+
+                lastFixture = { id, raw, expanded, annotations: annos, gathered, merged }
+            } catch (err) {
+                summary.textContent = 'Failed: ' + err.message
+                console.error(err)
+            }
+        }
+
+        document.getElementById('inspectGo').addEventListener('click', () => {
+            inspect(document.getElementById('inspectTarget').value)
+        })
+
+        document.getElementById('inspectLast').addEventListener('click', () => {
+            const id = requireLast()
+            if (!id) return
+            document.getElementById('inspectTarget').value = id
+            inspect(id)
+        })
+
+        document.getElementById('copyFixture').addEventListener('click', async () => {
+            if (!lastFixture) return alert('Inspect something first.')
+            await navigator.clipboard.writeText(JSON.stringify(lastFixture, null, 2))
+            console.log('Fixture copied for', lastFixture.id)
+        })
+    </script>
+
+    <script src="/js/deer.js" type="module"></script>
+</body>
+
+</html>
