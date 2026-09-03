@@ -11,6 +11,7 @@
  */
 
 import { default as DEER } from './deer-config.js'
+import { default as OFFLINE } from './deer-offline.js'
 
 function httpsIdLinks(id){
     return [ id.replace(/^https?:/,'https:'), id.replace(/^https?:/,'http:') ]
@@ -129,7 +130,11 @@ export default {
             return entity
         }
         let getVal = UTILS.getValue
-        return DEER.READ_RESOURCE(findId)
+        // Prefer the offline cache when there is no network so expansion works offline.
+        const dereference = OFFLINE.isOnline()
+            ? DEER.READ_RESOURCE(findId).then(obj => { if (obj) { OFFLINE.cacheEntity(obj) }; return obj })
+            : OFFLINE.getCachedEntity(findId).then(cached => cached ? cached.entity : null)
+        return dereference
             .then(obj => UTILS.findByTargetId(findId)
                 .then(function (annos) {
                     for (let i = 0; i < annos.length; i++) {

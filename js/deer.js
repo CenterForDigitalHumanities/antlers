@@ -35,8 +35,13 @@ import { default as renderer, initializeDeerViews } from './deer-render.js'
 // CDN at https://centerfordigitalhumanities.github.io/deer/releases/
 import { default as record, initializeDeerForms } from './deer-record.js'
 
+// Offline cache, write queue, and sync. Initializes connectivity listeners and
+// replays any writes queued in a prior session.
+import { default as OFFLINE } from './deer-offline.js'
+
 // fire up the element detection as needed
 try {
+    OFFLINE.init()
     initializeDeerViews(DEER)
     initializeDeerForms(DEER)
 } catch (err) {

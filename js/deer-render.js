@@ -13,9 +13,45 @@
 
 import { default as UTILS } from './deer-utils.js'
 import { default as config } from './deer-config.js'
+import { default as OFFLINE } from './deer-offline.js'
 
 const changeLoader = new MutationObserver(renderChange)
 var DEER = config
+
+/**
+ * Dereference an entity for rendering, preferring the offline cache when there
+ * is no network so stale data is shown transparently. Caches successful fetches
+ * for future offline use.
+ * @param {Element} elem element to mark stale if rendered from cache.
+ * @param {String} id URI of the entity to load.
+ * @returns {Promise<Object|null>} the entity, or null if it could not be loaded.
+ */
+async function loadEntityForRender(elem, id) {
+    let obj = {}
+    try {
+        obj = JSON.parse(localStorage.getItem(id))
+    } catch (err) { }
+    if (!obj || !obj["@id"]) {
+        const cached = await OFFLINE.getCachedEntity(id)
+        if (cached && !OFFLINE.isOnline()) {
+            obj = cached.entity
+            OFFLINE.markStale(elem, cached.cachedAt)
+        } else {
+            obj = await DEER.READ_RESOURCE(id).catch(error => error)
+            if (obj) {
+                localStorage.setItem(obj["@id"] || obj.id, JSON.stringify(obj))
+                OFFLINE.cacheEntity(obj)
+            } else if (cached) {
+                // Fetch failed (e.g. transient error while online) — fall back to cache.
+                obj = cached.entity
+                OFFLINE.markStale(elem, cached.cachedAt)
+            } else {
+                return null
+            }
+        }
+    }
+    return obj
+}
 
 
 
@@ -33,18 +69,8 @@ async function renderChange(mutationsList) {
             case DEER.LIST:
                 let id = mutation.target.getAttribute(DEER.ID)
                 if (id === "null" || mutation.target.getAttribute(DEER.COLLECTION)) return
-                let obj = {}
-                try {
-                    obj = JSON.parse(localStorage.getItem(id))
-                } catch (err) { }
-                if (!obj || !obj["@id"]) {
-                    obj = await DEER.READ_RESOURCE(id).catch(error => error)
-                    if (obj) {
-                        localStorage.setItem(obj["@id"] || obj.id, JSON.stringify(obj))
-                    } else {
-                        return false
-                    }
-                }
+                const obj = await loadEntityForRender(mutation.target, id)
+                if (!obj) { return false }
                 RENDER.element(mutation.target, obj)
                 break
             case DEER.LISTENING:
@@ -282,7 +308,7 @@ export default class DeerRender {
                 throw err
             } else {
                 if (this.id) {
-                    DEER.READ_RESOURCE(this.id).then(obj => RENDER.element(this.elem, obj)).catch(err => err)
+                    loadEntityForRender(this.elem, this.id).then(obj => { if (obj) { RENDER.element(this.elem, obj) } }).catch(err => err)
                 } else if (this.collection) {
                     // Look not only for direct objects, but also collection annotations
                     // Only the most recent, do not consider history parent or children history nodes

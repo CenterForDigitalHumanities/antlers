@@ -40,7 +40,12 @@ export default {
         NEW_FORM: "deer-form",
         VIEW_RENDERED : "deer-view-rendered",
         FORM_RENDERED : "deer-form-rendered",
-        CLICKED: "deer-clicked"
+        CLICKED: "deer-clicked",
+        ONLINE: "deer-online",
+        OFFLINE: "deer-offline",
+        SYNCED: "deer-synced",
+        QUEUED: "deer-queued",
+        STALE: "deer-stale"
     },
 
     SUPPRESS: ["__rerum", "@context"], //properties to ignore
