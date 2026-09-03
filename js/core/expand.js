@@ -11,7 +11,7 @@
 
 import config, { asInteger, INTEGER_DEFAULTS } from './config.js'
 import * as rerum from './rerum.js'
-import { annotationTypeClauses, applyAssertions, isAnnotationType, mergeAssertions, requireDocument, shapeValues } from './assertions.js'
+import { annotationTypeClauses, applyAssertions, isAnnotationType, mergeAssertions, project, requireDocument, shapeValues } from './assertions.js'
 
 /**
  * Keep only the documents that are actually Annotations.
@@ -237,13 +237,17 @@ export async function forDisplayRaw(id, { fresh = false } = {}) {
  *
  * @param {String|Object} id the entity URI or an object carrying one.
  * @param {Object} options `fresh: true` busts the HTTP cache (read-after-write).
+ *   `properties` (Array<String>|String) projects the result down to those
+ *   properties plus identity keys — a display that only wants `label`, `age`,
+ *   and `gravatar_uri` requests exactly those.
  * @returns {Promise<Object>} DEER-shaped entity: asserted properties become
  * `{value, source, evidence}` objects (arrays thereof when multivalued).  No
  * value carries a `citationSource` — the display path never has one to carry.
  * @throws {TypeError} when the id is not RERUM-hosted.
  */
 export async function forDisplay(id, options) {
-    return shapeValues(await forDisplayRaw(id, options))
+    const shaped = shapeValues(await forDisplayRaw(id, options))
+    return project(shaped, options?.properties)
 }
 
 /**
@@ -252,10 +256,12 @@ export async function forDisplay(id, options) {
  * carry `source.citationSource` so the form knows which annotation to update.
  *
  * @param {String|Object} id the entity URI or an object carrying one.
+ * @param {Object} options `properties` (Array<String>|String) projects the
+ * result down to those properties plus identity keys.
  * @returns {Promise<Object>} DEER-shaped entity with full annotation provenance.
  * @throws {TypeError} when the id is not RERUM-hosted.
  */
-export async function forEditing(id) {
+export async function forEditing(id, options) {
     const { entity, annotations } = await clientRead(rerum.idOf(id), { fresh: true })
-    return applyAssertions(entity, annotations)
+    return project(applyAssertions(entity, annotations), options?.properties)
 }
