@@ -253,8 +253,10 @@ export function mergeAssertions(entity, annotations = [], { provenance = true } 
         // An annotation with no id has no citationSource to contribute
         const annoId = anno?.["@id"] ?? anno?.id
         if (annoId === undefined || annoId === null) { continue }
-        // A superseded annotation asserts nothing.
-        if (anno?.__rerum?.history?.next?.length) { continue }
+        // No __rerum.history.next skip here — clientRead now returns only
+        // scoped leaves (the generator's last word on each chain), so every
+        // annotation in the list is already the asserting version.  The old
+        // leaf-only filter is superseded by scoped-leaf resolution upstream.
         const hasBodyValue = typeof anno.bodyValue === "string"
         if (hasBodyValue) {
             mergeAssertion(assertOn, "bodyValue", contribute(anno.bodyValue, anno))
