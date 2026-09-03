@@ -11,6 +11,7 @@
 
 import { default as UTILS } from './deer-utils.js'
 import { default as config } from './deer-config.js'
+import { default as OFFLINE } from './deer-offline.js'
 
 const changeLoader = new MutationObserver(renderChange)
 var DEER = config
@@ -239,6 +240,8 @@ export default class DeerReport {
         if (this.elem.getAttribute(DEER.ITEMTYPE) === "simple") {
             return this.simpleUpsert(event).then(entity => {
                 //Notice that sipleUpsert may return {} in certain controlled situations, causing an undefined error here, on purpose.
+                //A null result means the write was queued for offline sync and has no authoritative id yet.
+                if (!entity) { return }
                 this.elem.setAttribute(DEER.ID, entity["@id"])
                 new DeerReport(this.elem)
             })
@@ -260,22 +263,29 @@ export default class DeerReport {
             formAction = Promise.resolve(record)
         } else {
             let self = this
-            formAction = fetch(DEER.URLS.CREATE, {
+            // Create online, or queue for offline sync. Resolves to the unwrapped
+            // new_obj_state, or null when the create was queued offline.
+            formAction = OFFLINE.writeOrQueue({
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json; charset=utf-8"
-                },
-                body: JSON.stringify(record)
+                url: DEER.URLS.CREATE,
+                body: record,
+                targetId: null
             })
-                .then(response => response.json())
-                .then(data => {
-                    UTILS.broadcast(undefined, DEER.EVENTS.CREATED, self.elem, data.new_obj_state)
-                    return data.new_obj_state
+                .then(state => {
+                    if (state) { UTILS.broadcast(undefined, DEER.EVENTS.CREATED, self.elem, state) }
+                    return state
                 })
                 .catch(err => { })
         }
 
         formAction.then((function (entity) {
+            // If the create was queued offline there is no authoritative @id yet, so the
+            // annotations that target it cannot be formed. Warn and stop; the create will
+            // sync when online, but its annotations are not queued in this pass.
+            if (!entity) {
+                UTILS.warning("Entity create was queued for offline sync; its annotations are not queued yet and will need to be resubmitted once the entity has an id.", this.elem)
+                return
+            }
             let annotations = Array.from(this.elem.querySelectorAll(DEER.INPUTS.map(s => s + "[" + DEER.KEY + "]").join(","))).filter(el => Boolean(el.$isDirty))
             if (annotations.length === 0) {
                 //May be worthwhile to call out the lack of descriptive information in this form submission.
@@ -367,19 +377,20 @@ export default class DeerReport {
                     }
                     let name = input.getAttribute("title")
                     if (name) { annotation.body[input.getAttribute(DEER.KEY)].name = name }
-                    return fetch(DEER.URLS[action], {
+                    // Write online, or queue for offline sync. writeOrQueue resolves to the
+                    // unwrapped new_obj_state, or null when the write was queued offline.
+                    return OFFLINE.writeOrQueue({
                         method: (inputId) ? "PUT" : "POST",
-                        headers: {
-                            "Content-Type": "application/json; charset=utf-8"
-                        },
-                        body: JSON.stringify(annotation)
+                        url: DEER.URLS[action],
+                        body: annotation,
+                        targetId: inputId || null
                     })
-                        .then(response => response.json())
-                        .then(anno => {
-                            input.setAttribute(DEER.SOURCE, anno.new_obj_state["@id"])
-                            if(anno.new_obj_state.evidence)input.setAttribute(DEER.EVIDENCE, anno.new_obj_state.evidence)
-                            if(anno.new_obj_state.motivation)input.setAttribute(DEER.MOTIVATION, anno.new_obj_state.motivation)
-                            if(anno.new_obj_state.creator)input.setAttribute(DEER.ATTRIBUTION, anno.new_obj_state.creator)
+                        .then(state => {
+                            if (!state) { return } // queued for offline sync
+                            input.setAttribute(DEER.SOURCE, state["@id"])
+                            if(state.evidence)input.setAttribute(DEER.EVIDENCE, state.evidence)
+                            if(state.motivation)input.setAttribute(DEER.MOTIVATION, state.motivation)
+                            if(state.creator)input.setAttribute(DEER.ATTRIBUTION, state.creator)
                             //TODO handle @context?
                     })
                 })
@@ -389,6 +400,9 @@ export default class DeerReport {
             })
         }).bind(this))
             .then(entity => {
+                // A null/undefined entity means the create was queued offline and the
+                // annotation phase was skipped, so there is no authoritative id to set.
+                if (!entity) { return }
                 this.elem.setAttribute(DEER.ID, entity["@id"])
                 new DeerReport(this.elem)
             })
@@ -469,15 +483,14 @@ export default class DeerReport {
             action = "OVERWRITE"
             record["@id"] = formId
         }
-        return fetch(DEER.URLS[action], {
+        // Write online, or queue for offline sync. Resolves to the unwrapped new_obj_state,
+        // or null when the write was queued offline (no authoritative id yet).
+        return OFFLINE.writeOrQueue({
             method: (formId) ? "PUT" : "POST",
-            headers: {
-                "Content-Type": "application/json; charset=utf-8"
-            },
-            body: JSON.stringify(record)
+            url: DEER.URLS[action],
+            body: record,
+            targetId: formId || null
         })
-            .then(response => response.json())
-            .then(obj => { return obj.new_obj_state })
     }
 }
 
