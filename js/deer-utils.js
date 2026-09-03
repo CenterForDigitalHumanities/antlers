@@ -129,7 +129,7 @@ export default {
             return entity
         }
         let getVal = UTILS.getValue
-        return fetch(findId.replace(/^https?:/,location.protocol)).then(response => response.json())
+        return DEER.READ_RESOURCE(findId)
             .then(obj => UTILS.findByTargetId(findId)
                 .then(function (annos) {
                     for (let i = 0; i < annos.length; i++) {

@@ -48,6 +48,21 @@ export default {
     ROBUSTFEEDBACK: true, //Show warnings along with errors in the web console.  Set to false to only see errors.  
 
     /**
+     * Read-resource adapter. Given a resource URI, return a Promise that resolves
+     * to the parsed JSON/JSON-LD object for that URI. This is the single boundary
+     * DEER uses to dereference a `deer-id` for rendering and annotation expansion.
+     *
+     * The default performs a plain `fetch` and parses JSON, which is sufficient for
+     * public JSON-LD resources (including public Solid Pod resources). Applications
+     * that need to read protected or non-JSON resources can override this hook with
+     * a custom reader that owns URL handling, auth headers, and content negotiation.
+     *
+     * @param {String} id URI of the resource to dereference.
+     * @returns {Promise<Object>} parsed resource object.
+     */
+    READ_RESOURCE: (id) => fetch(id.replace(/^https?:/, location.protocol)).then(response => response.json()),
+
+    /**
      * Add any custom templates here through import or copy paste.
      * Templates added here will overwrite the defaults in deer-render.js.
      * 

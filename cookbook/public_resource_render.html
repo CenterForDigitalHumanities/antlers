@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<!--
+    author: Patrick Cuba <cubap@slu.edu>
+
+    This is a recipe for rendering a public JSON-LD resource that is NOT stored in RERUM,
+    using DEER's read-resource hook (DEER.READ_RESOURCE).
+
+    The default reader performs a plain fetch and parses JSON, which already works for most
+    public JSON-LD resources. When a resource needs a specific content type (e.g. a Solid Pod
+    resource that content-negotiates), override DEER.READ_RESOURCE with a custom reader that
+    owns URL handling, auth headers, and content negotiation.
+
+    This example loads a public JSON-LD Verifiable Credential from the W3C examples.
+-->
+<html>
+
+<head>
+    <title>Recipe: Render a Public JSON-LD Resource</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://unpkg.com/chota@latest">
+    <style>
+        h4 {
+            margin-bottom: 0px;
+        }
+    </style>
+</head>
+
+<body>
+    <h4>Rendered Public JSON-LD Resource</h4>
+    <p>
+        The <code>deer-id</code> below points at a public JSON-LD resource outside RERUM.
+        The custom reader requests the JSON-LD content type before rendering.
+    </p>
+    <deer-view deer-id="https://www.w3.org/2018/credentials/examples/1" deer-template="json"></deer-view>
+
+    <script type="module">
+        import { default as DEER } from '/js/deer-config.js'
+
+        // Custom reader: request JSON-LD content negotiation for public resources.
+        // For a protected Solid Pod resource, add the appropriate Authorization header here.
+        DEER.READ_RESOURCE = (id) =>
+            fetch(id, { headers: { Accept: 'application/ld+json' } })
+                .then(response => response.json())
+
+        // Now that the reader is configured, load the DEER runtime to render the views above.
+        await import('/js/deer.js')
+    </script>
+</body>
+</html>
