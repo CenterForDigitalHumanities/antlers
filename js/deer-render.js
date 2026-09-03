@@ -19,6 +19,23 @@ const changeLoader = new MutationObserver(renderChange)
 var DEER = config
 
 /**
+ * Track rendered views so we can fire a single completion event once every
+ * `deer-view` element on the page has finished rendering (issue #95).
+ */
+const renderedViews = new Set()
+let loadedCompleteFired = false
+document.addEventListener(DEER.EVENTS.VIEW_RENDERED, (e) => {
+    if (loadedCompleteFired) { return }
+    const elem = e.detail?.element ?? e.target
+    if (elem) { renderedViews.add(elem) }
+    const allViews = document.querySelectorAll(DEER.VIEW)
+    if (allViews.length && allViews.every(v => renderedViews.has(v))) {
+        loadedCompleteFired = true
+        UTILS.broadcast(undefined, DEER.EVENTS.LOADED_COMPLETE, document, { count: allViews.length })
+    }
+})
+
+/**
  * Dereference an entity for rendering, preferring the offline cache when there
  * is no network so stale data is shown transparently. Caches successful fetches
  * for future offline use.

@@ -40,6 +40,7 @@ export default {
         NEW_FORM: "deer-form",
         VIEW_RENDERED : "deer-view-rendered",
         FORM_RENDERED : "deer-form-rendered",
+        LOADED_COMPLETE: "deer-loaded-complete",
         CLICKED: "deer-clicked",
         ONLINE: "deer-online",
         OFFLINE: "deer-offline",

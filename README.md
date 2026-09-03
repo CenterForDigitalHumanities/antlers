@@ -54,6 +54,7 @@ render state without polling:
 | `deer-queued` | A write was queued while offline. `detail.pending` is the pending count. |
 | `deer-synced` | Queued writes were replayed. `detail.synced` is the number synced. |
 | `deer-stale` | An element was rendered from cache. `detail.cachedAt` is the cache timestamp. |
+| `deer-loaded-complete` | Every `deer-view` element on the page has finished rendering. `detail.count` is the number of views. |
 
 **Limitations.**
 

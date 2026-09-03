@@ -292,7 +292,18 @@ export default {
      * @param [String] targetStyle other formats of resource targeting.  May be null
      */
     findByTargetId: async function (id, targetStyle = []) {
-        let everything = Object.keys(localStorage).filter(key=>key.replace(/^https?:/,"https:").startsWith(DEER.URLS.BASE_ID)).map(k => JSON.parse(localStorage.getItem(k)))
+        // localStorage values can be unparsable JSON (e.g. truncated writes); guard each parse.
+        let everything = Object.keys(localStorage)
+            .filter(key => key.replace(/^https?:/, "https:").startsWith(DEER.URLS.BASE_ID))
+            .map(k => {
+                try {
+                    return JSON.parse(localStorage.getItem(k))
+                } catch (err) {
+                    console.warn("Skipping unparsable cached entity:", k, err)
+                    return null
+                }
+            })
+            .filter(o => o !== null)
         if (!Array.isArray(targetStyle)) {
             targetStyle = [targetStyle]
         }
