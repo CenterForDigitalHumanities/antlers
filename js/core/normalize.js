@@ -108,3 +108,19 @@ export function getLabel(obj, noLabel = "[ unlabeled ]", options = {}) {
     }
     return label ?? noLabel
 }
+
+/**
+ * Pull a usable URI out of a string or an object bearing an id.
+ *
+ * Mirrors getValue / getLabel: tolerant, and returns undefined rather than
+ * throwing when no id can be found.  Callers that need a hard failure should
+ * use rerum.idOf, which throws a TypeError.
+ *
+ * @param {String|Object} obj the id string or an object carrying one.
+ * @returns {String|undefined} the URI, or undefined when none is present.
+ */
+export function getID(obj) {
+    if (obj === undefined || obj === null) { return undefined }
+    if (typeof obj === "string") { return obj }
+    return obj["@id"] ?? obj.id
+}

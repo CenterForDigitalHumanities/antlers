@@ -269,8 +269,8 @@ export default class DeerReport {
             })
                 .then(response => response.json())
                 .then(data => {
-                    UTILS.broadcast(undefined, DEER.EVENTS.CREATED, self.elem, data.new_obj_state)
-                    return data.new_obj_state
+                    UTILS.broadcast(undefined, DEER.EVENTS.CREATED, self.elem, data)
+                    return data
                 })
                 .catch(err => { })
         }
@@ -376,10 +376,10 @@ export default class DeerReport {
                     })
                         .then(response => response.json())
                         .then(anno => {
-                            input.setAttribute(DEER.SOURCE, anno.new_obj_state["@id"])
-                            if(anno.new_obj_state.evidence)input.setAttribute(DEER.EVIDENCE, anno.new_obj_state.evidence)
-                            if(anno.new_obj_state.motivation)input.setAttribute(DEER.MOTIVATION, anno.new_obj_state.motivation)
-                            if(anno.new_obj_state.creator)input.setAttribute(DEER.ATTRIBUTION, anno.new_obj_state.creator)
+                            input.setAttribute(DEER.SOURCE, anno["@id"])
+                            if(anno.evidence)input.setAttribute(DEER.EVIDENCE, anno.evidence)
+                            if(anno.motivation)input.setAttribute(DEER.MOTIVATION, anno.motivation)
+                            if(anno.creator)input.setAttribute(DEER.ATTRIBUTION, anno.creator)
                             //TODO handle @context?
                     })
                 })
@@ -477,7 +477,7 @@ export default class DeerReport {
             body: JSON.stringify(record)
         })
             .then(response => response.json())
-            .then(obj => { return obj.new_obj_state })
+            .then(obj => { return obj })
     }
 }
 
