@@ -292,7 +292,7 @@ export default {
             targetStyle = [targetStyle]
         }
         targetStyle = targetStyle.concat(["target", "target.@id", "target.id"]) //target.source?
-        let historyWildcard = { "$exists": true, "$size": 0 }
+        let historyWildcard = []
         let obj = { "$or": [], "__rerum.history.next": historyWildcard }
         const uris = httpsQueryArray(id)
         for (let target of targetStyle) {

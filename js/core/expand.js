@@ -119,7 +119,7 @@ function targetingQuery(uris) {
         "$and": [
             { "$or": uris.flatMap(targetingClauses) },
             { "$or": annotationTypeClauses() },
-            { "__rerum.history.next": { "$size": 0 } }
+            { "__rerum.history.next": [] }
         ]
     }
 }
