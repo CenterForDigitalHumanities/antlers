@@ -497,5 +497,21 @@ async function deleteDocument(entity) {
     return uri
 }
 
+/**
+ * GET the full version history for a RERUM document.
+ *
+ * @param {String|Object} id the document URI (or an object carrying one).
+ * @returns {Promise<Array<Object>>} all versions, oldest first.
+ * @throws {TypeError} when the id is not a RERUM document id.
+ */
+export async function history(id) {
+    const uri = canonicalId(idOf(id))
+    if (!isRerumId(uri)) {
+        throw new TypeError(`${uri} is not a RERUM document id, so it has no version history.`)
+    }
+    const response = await fetcher(`${uri}/history`)
+    return handleResponse(response)
+}
+
 // The one export that cannot be declared under its own name.
 export { deleteDocument as delete }

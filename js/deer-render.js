@@ -288,7 +288,7 @@ export default class DeerRender {
                 } else if (this.collection) {
                     // Look not only for direct objects, but also collection annotations
                     // Only the most recent, do not consider history parent or children history nodes
-                    let historyWildcard = { "$exists": true, "$size": 0 }
+                    let historyWildcard = []
                     let queryObj = {
                         $or: [{
                             "targetCollection": this.collection

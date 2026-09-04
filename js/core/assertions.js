@@ -253,8 +253,6 @@ export function mergeAssertions(entity, annotations = [], { provenance = true } 
         // An annotation with no id has no citationSource to contribute
         const annoId = anno?.["@id"] ?? anno?.id
         if (annoId === undefined || annoId === null) { continue }
-        // A superseded annotation asserts nothing.
-        if (anno?.__rerum?.history?.next?.length) { continue }
         const hasBodyValue = typeof anno.bodyValue === "string"
         if (hasBodyValue) {
             mergeAssertion(assertOn, "bodyValue", contribute(anno.bodyValue, anno))

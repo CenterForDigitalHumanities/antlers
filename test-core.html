@@ -884,7 +884,7 @@
                 const finds = await rerum.query({
                     targetCollection: COLLECTION,
                     creator: TAG,
-                    '__rerum.history.next': { $exists: true, $size: 0 }
+                    '__rerum.history.next': []
                 }, { limit: 25, skip: 0 })
 
                 const rows = $('collectionRows')

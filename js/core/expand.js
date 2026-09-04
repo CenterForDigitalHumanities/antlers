@@ -108,62 +108,94 @@ function targetingClauses(uri) {
 }
 
 /**
- * The one query both client reads issue: every leaf Annotation this deployment
- * wrote against any URI the record answers to.
- *
- * The client's mirror of the server's findLeafAnnotationsFor.
+ * Every leaf Annotation targeting any URI the record answers to, from any
+ * generator.  Generator scoping is resolved client-side via history walks.
  *
  * @param {Array<String>} uris every URI to match as a target.
  * @returns {Object} the query document.
- * @throws {TypeError} when no generator is configured.
  */
 function targetingQuery(uris) {
     return {
         "$and": [
             { "$or": uris.flatMap(targetingClauses) },
-            // Nothing but an Annotation asserts anything.
-            { "$or": annotationTypeClauses() }
-        ],
-        "__rerum.generatedBy": rerum.generatedBy(),
-        "__rerum.history.next": { "$exists": true, "$size": 0 }
+            { "$or": annotationTypeClauses() },
+            { "__rerum.history.next": [] }
+        ]
     }
 }
 
 /**
- * The client read path: an entity document and the Annotation documents
- * targeting it, RAW.
+ * Resolve scoped leaves from a set of leaf annotations: for each chain, keep
+ * the most recent version authored by this deployment's generator.
  *
- * TWO requests, issued in PARALLEL, so the cost is the slower of the pair: a
- * direct GET for the entity and one paged query for the annotations targeting
- * it.  A record with a RERUM Slug costs one further query.
+ * Leaves already from our generator are kept as-is.  Leaves from other
+ * generators trigger a `/history` walk back through the chain to find the
+ * most recent version we authored.  Chains are deduplicated by
+ * `__rerum.history.prev` so branched siblings don't trigger redundant calls.
+ *
+ * @param {Array<Object>} leaves leaf annotation documents from the targeting query.
+ * @returns {Promise<Array<Object>>} the scoped leaves, ready to merge.
+ */
+async function resolveScopedLeaves(leaves) {
+    const ours = new Map()
+    const processedChains = new Set()
+    const ourGen = rerum.canonicalId(config.GENERATOR)
+    for (const leaf of leaves) {
+        const leafId = rerum.canonicalId(leaf?.["@id"] ?? leaf?.id)
+        if (typeof leafId !== "string") { continue }
+        if (rerum.canonicalId(leaf?.__rerum?.generatedBy) === ourGen) {
+            ours.set(leafId, leaf)
+            continue
+        }
+        const prev = rerum.canonicalId(leaf?.__rerum?.history?.prev)
+        if (typeof prev === "string" && processedChains.has(prev)) { continue }
+        if (typeof prev === "string") { processedChains.add(prev) }
+        try {
+            const chain = await rerum.history(leafId)
+            for (let i = chain.length - 1; i >= 0; i--) {
+                const version = chain[i]
+                if (rerum.canonicalId(version?.__rerum?.generatedBy) !== ourGen) { continue }
+                const versionId = rerum.canonicalId(version?.["@id"] ?? version?.id)
+                if (typeof versionId === "string") { ours.set(versionId, version) }
+                break
+            }
+        } catch {
+            // History fetch failed — skip this chain rather than failing the read.
+        }
+    }
+    return [...ours.values()]
+}
+
+/**
+ * The client read path: an entity document and the scoped-leaf Annotation
+ * documents targeting it, RAW.
+ *
+ * Two requests: a direct GET for the entity and one paged query for all leaf
+ * Annotations targeting it.  A record with a RERUM Slug costs one further
+ * query.  Foreign-generator leaves trigger additional `/history` calls to
+ * walk back to the most recent version this deployment authored.
  *
  * @param {String|Object} id the entity URI or an object carrying one.
  * @param {Object} options `fresh` busts the HTTP cache on the entity GET.
  * @returns {Promise<{entity: Object, annotations: Array<Object>}>} raw documents:
- * the entity, and the annotations THIS deployment wrote against it.  The
- * generator filter is part of the query, so a merge never has to re-check who
- * asserted what.
+ * the entity, and the scoped-leaf annotations for this deployment.
  * @throws {TypeError} when the id is not RERUM-hosted, or no generator is configured.
  */
 export async function clientRead(id, { fresh = false } = {}) {
     const uri = rerum.idOf(id)
     requireRerumId(uri)
-    // An unconfigured generator must refuse this read without leaving the entity GET in flight.
+    rerum.generatedBy()
     const annotationQuery = targetingQuery([uri])
-    // Both reads are independent, so neither waits on the other.
     const [resolved, list] = await Promise.all([
         rerum.resolve(uri, { fresh }),
         queryAll(annotationQuery, uri)
     ])
     const entity = requireDocument(resolved, `The read of ${uri}`)
-    // The entity cannot assert about itself.  It reaches the annotation list
-    // only by targeting its own URI, which would otherwise merge it onto itself.
     const isSelf = (doc) => rerum.canonicalId(doc?.["@id"] ?? doc?.id) === rerum.canonicalId(uri)
-    const annotations = onlyAnnotations(list.filter(doc => !isSelf(doc)))
-    return {
-        entity,
-        annotations: annotations.concat(await aliasTargetedAnnotations(entity, uri, annotations))
-    }
+    const primaryLeaves = onlyAnnotations(list.filter(doc => !isSelf(doc)))
+    const aliasLeaves = await aliasTargetedAnnotations(entity, uri, primaryLeaves)
+    const scopedLeaves = await resolveScopedLeaves(primaryLeaves.concat(aliasLeaves))
+    return { entity, annotations: scopedLeaves }
 }
 
 /**
