@@ -106,8 +106,8 @@ function isTextualBody(body) {
  */
 export function requireDocument(doc, context = "This read") {
     if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
-        const got = (doc === null) ? "null" : (Array.isArray(doc) ? "an array" : typeof doc)
-        throw new TypeError(`${context} did not produce a usable document (got ${got}).`)
+        const fetchedDoc = (doc === null) ? "null" : (Array.isArray(doc) ? "an array" : typeof doc)
+        throw new TypeError(`${context} did not produce a usable document (got ${fetchedDoc}).`)
     }
     return doc
 }
