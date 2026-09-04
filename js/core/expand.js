@@ -108,157 +108,93 @@ function targetingClauses(uri) {
 }
 
 /**
- * The one query both client reads issue: every leaf Annotation this deployment
- * wrote against any URI the record answers to.
- *
- * The client's mirror of the server's findLeafAnnotationsFor.
+ * Every leaf Annotation targeting any URI the record answers to, from any
+ * generator.  Generator scoping is resolved client-side via history walks.
  *
  * @param {Array<String>} uris every URI to match as a target.
  * @returns {Object} the query document.
- * @throws {TypeError} when no generator is configured.
  */
 function targetingQuery(uris) {
     return {
         "$and": [
             { "$or": uris.flatMap(targetingClauses) },
-            // Nothing but an Annotation asserts anything.
-            { "$or": annotationTypeClauses() }
-        ],
-        "__rerum.generatedBy": rerum.generatedBy()
-        // No __rerum.history.next clause — we want ALL versions this generator
-        // authored, not just leaves.  Leaf selection is computed client-side
-        // via scoped-leaf resolution (see computeScopedLeaves).
+            { "$or": annotationTypeClauses() },
+            { "__rerum.history.next": { "$size": 0 } }
+        ]
     }
 }
 
 /**
- * Extract the chain roots from a set of annotation versions.
+ * Resolve scoped leaves from a set of leaf annotations: for each chain, keep
+ * the most recent version authored by this deployment's generator.
  *
- * A chain root is the first version in a RERUM version chain: its
- * `__rerum.history.prime` is the literal string `"root"`.  Every subsequent
- * version carries the root's `@id` as its `prime`, so the root uniquely
- * identifies the chain.
+ * Leaves already from our generator are kept as-is.  Leaves from other
+ * generators trigger a `/history` walk back through the chain to find the
+ * most recent version we authored.  Chains are deduplicated by
+ * `__rerum.history.prev` so branched siblings don't trigger redundant calls.
  *
- * @param {Array<Object>} annotations annotation documents from query 1.
- * @returns {Array<String>} canonical root ids, deduplicated.
+ * @param {Array<Object>} leaves leaf annotation documents from the targeting query.
+ * @returns {Promise<Array<Object>>} the scoped leaves, ready to merge.
  */
-function extractChainRoots(annotations) {
-    const roots = new Set()
-    for (const anno of annotations) {
-        const prime = anno?.__rerum?.history?.prime
-        const root = (typeof prime === "string" && prime !== "root")
-            ? rerum.canonicalId(prime)
-            : rerum.canonicalId(anno?.["@id"] ?? anno?.id)
-        if (typeof root === "string" && root.length > 0) {
-            roots.add(root)
+async function resolveScopedLeaves(leaves) {
+    const ours = new Map()
+    const processedChains = new Set()
+    const ourGen = rerum.canonicalId(config.GENERATOR)
+    for (const leaf of leaves) {
+        const leafId = rerum.canonicalId(leaf?.["@id"] ?? leaf?.id)
+        if (typeof leafId !== "string") { continue }
+        if (rerum.canonicalId(leaf?.__rerum?.generatedBy) === ourGen) {
+            ours.set(leafId, leaf)
+            continue
         }
-    }
-    return [...roots]
-}
-
-/**
- * Compute scoped leaves: the versions in `mine` that have no successor also in `mine`.
- *
- * A scoped leaf is the generator's last word on a chain — the newest version
- * this generator authored, immune to another app's `/update`.  This is the
- * client-side equivalent of a server-side `?versions=scoped-leaf` parameter.
- *
- * The algorithm walks `__rerum.history.next` from each version in `mine`.
- * If any transitively reachable successor is also in `mine`, the starting
- * version is superseded and excluded.  The `allChainVersions` set (from query 2)
- * provides the intermediate foreign versions needed to traverse through chains
- * where the generator did not author every step.
- *
- * @param {Array<Object>} allChainVersions every version in the chains (query 2).
- * @param {Array<Object>} mine the versions this generator authored (query 1).
- * @returns {Array<Object>} the scoped leaves, ready to merge.
- */
-function computeScopedLeaves(allChainVersions, mine) {
-    const mineIds = new Set(mine.map(a => rerum.canonicalId(a?.["@id"] ?? a?.id)))
-
-    // Build a map of all chain versions by canonical id for traversal.
-    const allById = new Map()
-    for (const v of allChainVersions) {
-        const id = rerum.canonicalId(v?.["@id"] ?? v?.id)
-        if (typeof id === "string") { allById.set(id, v) }
-    }
-
-    // Iterative DFS to avoid stack overflow on deep chains.
-    const isSuperseded = (version) => {
-        const stack = [...(version?.__rerum?.history?.next ?? [])]
-        const visited = new Set()
-        while (stack.length > 0) {
-            const nextId = stack.pop()
-            const canonicalNext = rerum.canonicalId(nextId)
-            if (visited.has(canonicalNext)) { continue }
-            visited.add(canonicalNext)
-            if (mineIds.has(canonicalNext)) { return true }
-            const successor = allById.get(canonicalNext)
-            if (successor) {
-                for (const further of successor?.__rerum?.history?.next ?? []) {
-                    if (!visited.has(rerum.canonicalId(further))) { stack.push(further) }
-                }
+        const prev = rerum.canonicalId(leaf?.__rerum?.history?.prev)
+        if (typeof prev === "string" && processedChains.has(prev)) { continue }
+        if (typeof prev === "string") { processedChains.add(prev) }
+        try {
+            const chain = await rerum.history(leafId)
+            for (let i = chain.length - 1; i >= 0; i--) {
+                const version = chain[i]
+                if (rerum.canonicalId(version?.__rerum?.generatedBy) !== ourGen) { continue }
+                const versionId = rerum.canonicalId(version?.["@id"] ?? version?.id)
+                if (typeof versionId === "string") { ours.set(versionId, version) }
+                break
             }
+        } catch {
+            // History fetch failed — skip this chain rather than failing the read.
         }
-        return false
     }
-
-    return mine.filter(v => !isSuperseded(v))
+    return [...ours.values()]
 }
 
 /**
  * The client read path: an entity document and the scoped-leaf Annotation
  * documents targeting it, RAW.
  *
- * THREE requests: a direct GET for the entity, one paged query for all
- * annotation versions this generator authored targeting the entity, and a
- * second paged query to fetch the full version chains needed for scoped-leaf
- * resolution.  A record with a RERUM Slug costs one further query.
+ * Two requests: a direct GET for the entity and one paged query for all leaf
+ * Annotations targeting it.  A record with a RERUM Slug costs one further
+ * query.  Foreign-generator leaves trigger additional `/history` calls to
+ * walk back to the most recent version this deployment authored.
  *
  * @param {String|Object} id the entity URI or an object carrying one.
  * @param {Object} options `fresh` busts the HTTP cache on the entity GET.
  * @returns {Promise<{entity: Object, annotations: Array<Object>}>} raw documents:
- * the entity, and the scoped-leaf annotations THIS deployment wrote against it.
- * The generator filter is part of the query, so a merge never has to re-check
- * who asserted what.
+ * the entity, and the scoped-leaf annotations for this deployment.
  * @throws {TypeError} when the id is not RERUM-hosted, or no generator is configured.
  */
 export async function clientRead(id, { fresh = false } = {}) {
     const uri = rerum.idOf(id)
     requireRerumId(uri)
-    // An unconfigured generator must refuse this read without leaving the entity GET in flight.
+    rerum.generatedBy()
     const annotationQuery = targetingQuery([uri])
-    // Both reads are independent, so neither waits on the other.
     const [resolved, list] = await Promise.all([
         rerum.resolve(uri, { fresh }),
         queryAll(annotationQuery, uri)
     ])
     const entity = requireDocument(resolved, `The read of ${uri}`)
-    // The entity cannot assert about itself.  It reaches the annotation list
-    // only by targeting its own URI, which would otherwise merge it onto itself.
     const isSelf = (doc) => rerum.canonicalId(doc?.["@id"] ?? doc?.id) === rerum.canonicalId(uri)
-    const primaryAnnotations = onlyAnnotations(list.filter(doc => !isSelf(doc)))
-
-    // Also gather annotations targeting alias URIs (slugs).
-    const aliasAnnotations = await aliasTargetedAnnotations(entity, uri, primaryAnnotations)
-
-    // Combine all versions this generator authored against this entity.
-    const allMine = primaryAnnotations.concat(aliasAnnotations)
-
-    // Extract chain roots and fetch all versions in those chains.
-    const roots = extractChainRoots(allMine)
-    const allChainVersions = roots.length > 0
-        ? await queryAll({
-            "$or": [
-                { "@id": { "$in": roots } },
-                { "__rerum.history.prime": { "$in": roots } }
-            ]
-        }, "chain resolution")
-        : []
-
-    // Compute scoped leaves: the generator's last word on each chain.
-    const scopedLeaves = computeScopedLeaves(allChainVersions, allMine)
-
+    const primaryLeaves = onlyAnnotations(list.filter(doc => !isSelf(doc)))
+    const aliasLeaves = await aliasTargetedAnnotations(entity, uri, primaryLeaves)
+    const scopedLeaves = await resolveScopedLeaves(primaryLeaves.concat(aliasLeaves))
     return { entity, annotations: scopedLeaves }
 }
 
