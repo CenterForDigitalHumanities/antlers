@@ -308,6 +308,37 @@ export function applyAssertions(entity, annotations = []) {
 }
 
 /**
+ * Project a resolved entity down to the properties a consumer named, keeping
+ * identity keys so the result is still a usable RERUM document.
+ *
+ * A display that only wants `label`, `age`, and `gravatar_uri` can request
+ * exactly those and get a smaller payload back without a second read.  Identity
+ * keys are always retained — a projected document must still carry its `@id`
+ * and type to be dereferenced or rendered.  Keys that are not present on the
+ * document are simply absent from the result; projection never invents values.
+ *
+ * @param {Object} obj a resolved or merged entity document.  Not mutated.
+ * @param {Array<String>|String} properties the property names to keep, beyond
+ * identity keys.  When omitted or empty, the document is returned unchanged.
+ * @returns {Object} a new object with identity keys and the requested properties.
+ */
+export function project(obj, properties) {
+    const source = requireDocument(obj, "Projecting")
+    if (properties === undefined || properties === null) { return source }
+    const keep = (Array.isArray(properties) ? properties : [properties])
+        .filter(k => typeof k === "string" && k.length > 0)
+    if (keep.length === 0) { return source }
+    const projected = {}
+    for (const [key, val] of Object.entries(source)) {
+        if (FORBIDDEN_KEYS.has(key)) { continue }
+        if (IDENTITY_KEYS.includes(key) || keep.includes(key)) {
+            projected[key] = val
+        }
+    }
+    return projected
+}
+
+/**
  * Attach one annotation's contribution to the object under `key`, preserving any
  * value already there: an existing value becomes the first element of an array
  * the contribution is appended to.  Raw values left here are shaped by the
