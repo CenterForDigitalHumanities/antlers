@@ -11,6 +11,7 @@
  */
 
 import { default as DEER } from './deer-config.js'
+import { default as OFFLINE } from './deer-offline.js'
 
 function httpsIdLinks(id){
     return [ id.replace(/^https?:/,'https:'), id.replace(/^https?:/,'http:') ]
@@ -129,7 +130,11 @@ export default {
             return entity
         }
         let getVal = UTILS.getValue
-        return fetch(findId.replace(/^https?:/,location.protocol)).then(response => response.json())
+        // Prefer the offline cache when there is no network so expansion works offline.
+        const dereference = OFFLINE.isOnline()
+            ? DEER.READ_RESOURCE(findId).then(obj => { if (obj) { OFFLINE.cacheEntity(obj) }; return obj })
+            : OFFLINE.getCachedEntity(findId).then(cached => cached ? cached.entity : null)
+        return dereference
             .then(obj => UTILS.findByTargetId(findId)
                 .then(function (annos) {
                     for (let i = 0; i < annos.length; i++) {
@@ -287,7 +292,18 @@ export default {
      * @param [String] targetStyle other formats of resource targeting.  May be null
      */
     findByTargetId: async function (id, targetStyle = []) {
-        let everything = Object.keys(localStorage).filter(key=>key.replace(/^https?:/,"https:").startsWith(DEER.URLS.BASE_ID)).map(k => JSON.parse(localStorage.getItem(k)))
+        // localStorage values can be unparsable JSON (e.g. truncated writes); guard each parse.
+        let everything = Object.keys(localStorage)
+            .filter(key => key.replace(/^https?:/, "https:").startsWith(DEER.URLS.BASE_ID))
+            .map(k => {
+                try {
+                    return JSON.parse(localStorage.getItem(k))
+                } catch (err) {
+                    console.warn("Skipping unparsable cached entity:", k, err)
+                    return null
+                }
+            })
+            .filter(o => o !== null)
         if (!Array.isArray(targetStyle)) {
             targetStyle = [targetStyle]
         }
