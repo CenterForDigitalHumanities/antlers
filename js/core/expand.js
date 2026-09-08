@@ -129,16 +129,20 @@ function targetingQuery(uris) {
  * the most recent version authored by this deployment's generator.
  *
  * Leaves already from our generator are kept as-is.  Leaves from other
- * generators trigger a `/history` walk back through the chain to find the
- * most recent version we authored.  Chains are deduplicated by
- * `__rerum.history.prev` so branched siblings don't trigger redundant calls.
+ * generators trigger a `history()` walk back through the ancestor chain to find
+ * the most recent version we authored.  Sibling leaves that share a
+ * `__rerum.history.previous` are two branches of one chain, so only the first
+ * walks and the rest reuse its result.
+ *
+ * The history endpoint returns ancestors newest first and excludes the leaf
+ * itself, so the first of OUR versions in walk order is the most recent.
  *
  * @param {Array<Object>} leaves leaf annotation documents from the targeting query.
  * @returns {Promise<Array<Object>>} the scoped leaves, ready to merge.
  */
 async function resolveScopedLeaves(leaves) {
     const ours = new Map()
-    const processedChains = new Set()
+    const walkedChains = new Map()
     const ourGen = rerum.canonicalId(config.GENERATOR)
     for (const leaf of leaves) {
         const leafId = rerum.canonicalId(leaf?.["@id"] ?? leaf?.id)
@@ -147,18 +151,28 @@ async function resolveScopedLeaves(leaves) {
             ours.set(leafId, leaf)
             continue
         }
-        const prev = rerum.canonicalId(leaf?.__rerum?.history?.prev)
-        if (typeof prev === "string" && processedChains.has(prev)) { continue }
-        if (typeof prev === "string") { processedChains.add(prev) }
+        // __rerum.history.previous is the chain the leaf hangs from; sibling
+        // branches share it, so one history() walk answers for all of them.
+        const previous = rerum.canonicalId(leaf?.__rerum?.history?.previous)
+        if (typeof previous !== "string" || previous === "") { continue }
+        if (walkedChains.has(previous)) {
+            for (const version of walkedChains.get(previous)) { ours.set(version["@id"], version) }
+            continue
+        }
         try {
-            const chain = await rerum.history(leafId)
-            for (let i = chain.length - 1; i >= 0; i--) {
-                const version = chain[i]
+            const ancestors = await rerum.history(leafId)
+            // Ancestors arrive newest first.  The first of OUR versions is the
+            // most recent word this deployment had on this chain.
+            const found = []
+            for (const version of ancestors) {
                 if (rerum.canonicalId(version?.__rerum?.generatedBy) !== ourGen) { continue }
                 const versionId = rerum.canonicalId(version?.["@id"] ?? version?.id)
-                if (typeof versionId === "string") { ours.set(versionId, version) }
+                if (typeof versionId !== "string") { continue }
+                found.push({ ...version, "@id": versionId })
                 break
             }
+            walkedChains.set(previous, found)
+            for (const version of found) { ours.set(version["@id"], version) }
         } catch {
             // History fetch failed — skip this chain rather than failing the read.
         }

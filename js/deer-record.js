@@ -275,7 +275,10 @@ export default class DeerReport {
                     if (state) { UTILS.broadcast(undefined, DEER.EVENTS.CREATED, self.elem, state) }
                     return state
                 })
-                .catch(err => { })
+                .catch(err => {
+                    // The server refused the create; nothing was queued.
+                    UTILS.warning("Entity create was refused by the server; nothing was saved. " + (err?.message ?? err), self.elem)
+                })
         }
 
         formAction.then((function (entity) {
@@ -393,6 +396,10 @@ export default class DeerReport {
                             if(state.creator)input.setAttribute(DEER.ATTRIBUTION, state.creator)
                             //TODO handle @context?
                     })
+                        .catch(err => {
+                            // The server refused this annotation; it was not queued.
+                            UTILS.warning("Annotation for " + input.getAttribute(DEER.KEY) + " was refused by the server; nothing was saved. " + (err?.message ?? err), input)
+                        })
                 })
             return Promise.all(annotations).then(() => {
                 UTILS.broadcast(undefined,DEER.EVENTS.UPDATED, this.elem, entity)
@@ -483,7 +490,7 @@ export default class DeerReport {
             action = "OVERWRITE"
             record["@id"] = formId
         }
-        // Write online, or queue for offline sync. Resolves to the unwrapped new_obj_state,
+        // Write online, or queue for offline sync. Resolves to the written state,
         // or null when the write was queued offline (no authoritative id yet).
         return OFFLINE.writeOrQueue({
             method: (formId) ? "PUT" : "POST",
@@ -491,6 +498,12 @@ export default class DeerReport {
             body: record,
             targetId: formId || null
         })
+            .catch(err => {
+                // The server refused the write; it was not queued.  Resolve to null
+                // so the caller's no-entity path runs (no id stamping, no re-init).
+                UTILS.warning("Simple upsert was refused by the server; nothing was saved. " + (err?.message ?? err), this.elem)
+                return null
+            })
     }
 }
 

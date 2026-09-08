@@ -498,10 +498,14 @@ async function deleteDocument(entity) {
 }
 
 /**
- * GET the full version history for a RERUM document.
+ * GET the ancestor chain of a RERUM document: every version upstream from it,
+ * newest first, NOT including the document itself.  Note the deployment serves
+ * this at `/v1/history/:_id`, not nested under the document's own URI, so the
+ * `/id/` path segment is swapped for `/history/`.
  *
  * @param {String|Object} id the document URI (or an object carrying one).
- * @returns {Promise<Array<Object>>} all versions, oldest first.
+ * @returns {Promise<Array<Object>>} the ancestors, newest first; the document
+ * itself is NOT in the array.
  * @throws {TypeError} when the id is not a RERUM document id.
  */
 export async function history(id) {
@@ -509,8 +513,10 @@ export async function history(id) {
     if (!isRerumId(uri)) {
         throw new TypeError(`${uri} is not a RERUM document id, so it has no version history.`)
     }
-    const response = await fetcher(`${uri}/history`)
-    return handleResponse(response)
+    const recordId = uri.slice(uri.lastIndexOf("/") + 1)
+    const url = uri.replace(/\/id\/[^/]+$/, `/history/${recordId}`)
+    const response = await fetcher(url)
+    return handleResponse(response, { url })
 }
 
 // The one export that cannot be declared under its own name.

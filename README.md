@@ -43,7 +43,10 @@ of fetching. An element rendered from cache is marked stale via `data-deer-stale
 **Writing.** All writes — annotation CREATE/UPDATE, and `simpleUpsert` CREATE/OVERWRITE — are
 attempted online first. When offline (or when the request fails), the exact request is queued
 in an IndexedDB outbox. When connectivity returns, queued writes are replayed in enqueue order;
-the first failure stops the replay to preserve ordering and is surfaced as an error.
+a server refusal (4xx) marks that write `error` and moves on to the next; any other failure
+(server error or network) stops the pass and leaves the write pending for the next sync,
+preserving order. Writes that the server refuses outright (4xx) are never queued in the first
+place — the caller sees the rejection immediately.
 
 **Status.** Connectivity is exposed through events and document attributes so applications can
 render state without polling:

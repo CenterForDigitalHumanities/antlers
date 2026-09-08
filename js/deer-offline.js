@@ -156,6 +156,8 @@ const OFFLINE = {
     /**
      * Attempt to perform a write online. Returns the parsed response on success,
      * or throws on network/HTTP failure so callers can decide to queue it.
+     * The thrown Error carries `status` for HTTP refusals, so callers can tell
+     * "the network failed" from "the server refused".
      * @param {Object} op { method, url, body }
      * @returns {Promise<Object>} parsed response JSON.
      */
@@ -166,17 +168,49 @@ const OFFLINE = {
             body: JSON.stringify(op.body)
         })
         if (!response.ok) {
-            throw new Error("HTTP " + response.status + " " + response.statusText)
+            throw Object.assign(
+                new Error("HTTP " + response.status + " " + response.statusText),
+                { status: response.status }
+            )
         }
         return response.json()
     },
 
     /**
-     * Attempt a write, falling back to the offline queue when offline or when the
-     * request fails. On success the resulting `new_obj_state` (if present) is
-     * cached and returned.
+     * True when an HTTP status means "the server refused THIS request", as
+     * opposed to "the request could not be delivered or served right now".
+     *
+     * 4xx directly; and the deployment's TinyNode proxy translates an upstream
+     * RERUM refusal (404 no such object, 400 malformed body…) into its own
+     * 502, so a 502 from the PROXY is still a refusal of this exact request.
+     * Determining which it was would mean parsing the body; the conservative
+     * reading is: the write failed for a reason that was NOT the network, so
+     * deleting it from the queue is wrong, but retrying it unchanged is also
+     * wrong. The sync replay marks it errored and moves on rather than
+     * wedging.
+     *
+     * @param {Number} status the HTTP status of the failed write.
+     * @returns {Boolean} whether the failure is a refusal of this request.
+     */
+    _isRefusal(status) {
+        return (Number.isInteger(status)
+            && (status >= 400 && status < 500
+                || status === 502))
+    },
+
+    /**
+     * Attempt a write, falling back to the offline queue when offline or when
+     * the request fails on the network. On success the resulting
+     * `new_obj_state` (if present) is unwrapped, cached, and returned.
+     *
+     * A server REFUSAL is NOT queued: the request was delivered and the server
+     * rejected it — replaying an unmodified rejection can only fail
+     * identically and blocks the rest of the outbox behind it. It is rethrown
+     * so the calling write path can surface it.
+     *
      * @param {Object} op { method, url, body, targetId }
-     * @returns {Promise<Object|null>} the `new_obj_state` from the write, or null if queued.
+     * @returns {Promise<Object|null>} the written state, or null if queued.
+     * @throws {Error} carrying `status` when the server refused the write.
      */
     async writeOrQueue(op) {
         if (OFFLINE.isOnline()) {
@@ -186,7 +220,11 @@ const OFFLINE = {
                 if (state) { await OFFLINE.cacheEntity(state) }
                 return state
             } catch (err) {
-                // Network or HTTP failure while "online" — queue it and let sync retry.
+                if (OFFLINE._isRefusal(err?.status)) {
+                    // The server saw and refused this exact request.
+                    throw err
+                }
+                // Network failure while "online" — queue it and let sync retry.
                 console.warn("DEER write failed; queueing for offline sync.", err)
             }
         }
@@ -226,7 +264,15 @@ const OFFLINE = {
                 synced++
             } catch (err) {
                 failed++
-                await OFFLINE.markError(op.queueId, err.message)
+                if (OFFLINE._isRefusal(err?.status)) {
+                    // The server refuses this exact request; it can never succeed as queued.
+                    await OFFLINE.markError(op.queueId, err.message)
+                    console.error("DEER queued write " + op.queueId + " was refused by the server; marking it errored and continuing.", err)
+                    continue
+                }
+                // Server (5xx other than the proxy's refusal translation) or network
+                // failure: leave it pending for the next sync, and stop this pass
+                // to preserve enqueue order.
                 console.error("DEER failed to sync queued write " + op.queueId + "; stopping to preserve order.", err)
                 break
             }
@@ -307,8 +353,7 @@ const OFFLINE = {
      * Broadcast that a write was queued while offline.
      */
     broadcastQueued() {
-        const pending = OFFLINE.pendingCount()
-        pending.then(count => OFFLINE._dispatch(DEER.EVENTS.QUEUED, { pending }))
+        OFFLINE.pendingCount().then(count => OFFLINE._dispatch(DEER.EVENTS.QUEUED, { pending: count }))
     },
 
     /**

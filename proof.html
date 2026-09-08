@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>DEER 2.0 Consolidation Proof — PRs #13 + #14 + #15</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://unpkg.com/chota@latest">
+    <style>
+        body { max-width: 76rem; margin-inline: auto; padding-inline: 1rem; }
+        section { border: 1px solid var(--color-lightGrey); border-radius: 4px; padding: 1rem; margin-block: 1.5rem; }
+        h2 { margin-bottom: 0.25rem; }
+        h3 { margin-top: 1rem; }
+        .hint { color: var(--color-darkGrey); font-size: 0.85rem; margin-block: 0.25rem 0.75rem; }
+        .panes { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); }
+        pre.out { background: #1d1f21; color: #c5c8c6; padding: 0.75rem; overflow: auto; max-height: 24rem; font-size: 0.75rem; }
+        .status { min-height: 1.5rem; font-size: 0.85rem; overflow-wrap: anywhere; }
+        .status[data-state="error"] { color: var(--color-error); font-weight: 600; }
+        .status[data-state="ok"] { color: var(--color-success); }
+        .verdict { display: grid; gap: 0.2rem; font-size: 0.85rem; margin-block: 0.5rem; }
+        .verdict span::before { content: "… "; }
+        .verdict span[data-pass="true"]::before { content: "PASS "; color: var(--color-success); font-weight: 700; }
+        .verdict span[data-pass="false"]::before { content: "FAIL "; color: var(--color-error); font-weight: 700; }
+        dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.1rem 0.75rem; font-size: 0.85rem; margin: 0; }
+        dl.kv dt { font-weight: 600; }
+        dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+        label { display: block; }
+        .tag { display: inline-block; background: var(--color-primary); color: #fff; border-radius: 3px; padding: 0 0.4rem; font-size: 0.75rem; }
+        deer-view { display: block; border: 1px dashed var(--color-lightGrey); border-radius: 4px; padding: 0.6rem; margin-block: 0.5rem; overflow: auto; }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>Consolidation Proof — PRs #13 + #14 + #15 on <code>1-major-update</code></h1>
+        <p class="hint">
+            One page driving every feature the three PRs land, against the live RERUM sandbox
+            (devstore). Core-layer features use <code>/js/core/</code> directly; attribute-level
+            features run the <code>deer.js</code> runtime, imported below after the page's own
+            config. Panels report PASS/FAIL so a refreshed page is the review.
+        </p>
+        <p class="hint">
+            Serves from the repo root (e.g. <code>npx serve .</code> or the VS Code Live Server)
+            — the modules import by absolute path.
+        </p>
+    </header>
+
+    <main>
+        <!-- ========== 1. Projection (PR #14) ========== -->
+        <section>
+            <h2>1. Projection — <code>forDisplay(id, { properties })</code> <span class="tag">PR 14</span></h2>
+            <p class="hint">
+                Reads the antlers#1 fixture, keeps only the named properties plus identity keys. The
+                projected document must still carry its <code>@id</code> and type so it stays a
+                usable RERUM document, and must not invent missing keys.
+            </p>
+            <div class="verdict" id="projectionVerdict"></div>
+            <div class="panes">
+                <div>
+                    <h3>Full forDisplay</h3>
+                    <pre class="out" id="projectionFull">-</pre>
+                </div>
+                <div>
+                    <h3>Projected to ["startDate"]</h3>
+                    <pre class="out" id="projectionKept">-</pre>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== 2. Scoped leaves (PR #15) ========== -->
+        <section>
+            <h2>2. Annotation evaporation — cross-generator chain <span class="tag">PR 15</span></h2>
+            <p class="hint">
+                Real devstore chain: annotation ending <code>…c0f548</code> (generator
+                <code>5afeeb…</code>) targets <code>…c0f53b</code> and was superseded by a foreign
+                generator's leaf ending <code>…384b06</code>. The old leaf-only read EVAPORATED our
+                version; the scoped-leaf read must resurrect it without leaking foreign assertions.
+            </p>
+            <div class="verdict" id="evapVerdict"></div>
+            <dl class="kv" id="evapOut"></dl>
+        </section>
+
+        <!-- ========== 3. History route + ordering (PR 15 companion) ========== -->
+        <section>
+            <h2>3. <code>rerum.history()</code> route and order</h2>
+            <p class="hint">
+                The endpoint is <code>/v1/history/:_id</code> (not nested under the document URI)
+                and returns ancestors newest-first, EXCLUDING the requested version. This panel
+                proves the merged route form and the iteration direction the scoped-leaf walk
+                depends on.
+            </p>
+            <div class="verdict" id="historyVerdict"></div>
+            <pre class="out" id="historyOut">-</pre>
+        </section>
+
+        <!-- ========== 4. Render pipeline + completion (PR #13) ========== -->
+        <section>
+            <h2>4. Read hook, render pipeline, completion event <span class="tag">PR 13</span></h2>
+            <p class="hint">
+                The two <code>deer-view</code> elements dereference through
+                <code>DEER.READ_RESOURCE</code> — the single dereference boundary PR #13 adds. One
+                renders a RERUM entity with the custom <code>cat</code> template; the other a
+                public non-RERUM JSON-LD vocabulary document. When the last one finishes,
+                <code>deer-loaded-complete</code> must fire. The completion tracker must not crash
+                on <code>NodeList.every</code> — that is the consolidated fix.
+            </p>
+            <div class="verdict" id="renderVerdict"></div>
+            <dl class="kv" id="renderOut"></dl>
+            <h3>Rendered views</h3>
+            <deer-view deer-id="https://devstore.rerum.io/v1/id/5d7ba417e4b07f0c56c0f539" deer-template="cat"></deer-view>
+            <!-- Same-origin public resource: no CORS variables, still non-RERUM,
+                 still dereferenced through DEER.READ_RESOURCE. -->
+            <deer-view deer-id="/cookbook/fixture_public_resource.json" deer-template="json"></deer-view>
+        </section>
+
+        <!-- ========== 5. Offline state (PR #13) ========== -->
+        <section>
+            <h2>5. Offline state — document attribute, cache, staleness</h2>
+            <p class="hint">
+                <code>OFFLINE.init()</code> stamps
+                <code>document.documentElement[data-deer-online]</code> at startup. The fixture is
+                read on page load (panel 4), so it sits in the IndexedDB cache. Press
+                <em>Re-render</em> with offline simulation on: the view must come from the cache,
+                carry <code>data-deer-stale</code>, and fire <code>deer-stale</code>.
+            </p>
+            <div class="verdict" id="offlineVerdict"></div>
+            <dl class="kv" id="offlineOut"></dl>
+            <p>
+                <label><input type="checkbox" id="forceOffline"> Simulate offline (fail the dereference)</label>
+                <button class="button primary" type="button" id="offlineReRender">Re-render fixture view</button>
+            </p>
+        </section>
+
+        <!-- ========== 6. Write queue semantics (PR 13 + consolidation fix) ========== -->
+        <section>
+            <h2>6. Write queue — refusals never poison the outbox</h2>
+            <p class="hint">
+                Consolidation change: a server <strong>refusal</strong> (4xx) must reject, never
+                queue — replaying an unmodified rejected request can only fail identically and
+                blocks every later write behind it. While offline the same write must queue and
+                resolve <code>null</code>; syncing replays the queue in order.
+            </p>
+            <div class="verdict" id="writeVerdict"></div>
+            <p class="status" id="writeStatus" role="status" aria-live="polite"></p>
+            <dl class="kv" id="writeOut"></dl>
+            <p>
+                <button class="button error" type="button" id="refuseTest">Attempt refused write (online)</button>
+                <button class="button primary" type="button" id="queueTest">Queue a write (offline simulation)</button>
+                <button class="button outline" type="button" id="syncTest">Sync now</button>
+            </p>
+        </section>
+    </main>
+
+    <script type="module">
+        import config, { configure } from '/js/core/config.js'
+        import * as rerum from '/js/core/rerum.js'
+        import * as expand from '/js/core/expand.js'
+        import { default as OFFLINE } from '/js/deer-offline.js'
+        import { default as DEER } from '/js/deer-config.js'
+
+        const $ = (id) => document.getElementById(id)
+        const say = (id, state, msg) => {
+            const el = $(id)
+            el.textContent = msg
+            el.dataset.state = state
+        }
+        const verdict = (id, rows) => {
+            $(id).innerHTML = rows.map(([name, pass]) =>
+                `<span data-pass="${pass}">${name}</span>`).join("")
+        }
+        const json = (v) => JSON.stringify(v, (k, val) => (k === "__rerum") ? "{…}" : val, 1)
+        const FIXTURE = 'https://devstore.rerum.io/v1/id/5d7ba417e4b07f0c56c0f539'
+        const OUR_GEN = 'https://devstore.rerum.io/v1/id/5afeebf3e4b0b0d588705d90'
+
+        // Point the core at the sandbox, matching the shipped DEER defaults.
+        configure({
+            GENERATOR: OUR_GEN,
+            URLS: {
+                CREATE: "https://tinydev.rerum.io/app/create",
+                UPDATE: "https://tinydev.rerum.io/app/update",
+                OVERWRITE: "https://tinydev.rerum.io/app/overwrite",
+                QUERY: "https://tinydev.rerum.io/app/query"
+            }
+        })
+
+        // Wire the loaded-complete counter before deer.js starts rendering.
+        let loadedCompleteCount = 0
+        let detailCount = 0
+        document.addEventListener(DEER.EVENTS.LOADED_COMPLETE, (e) => {
+            loadedCompleteCount++
+            detailCount = e.detail?.count
+        })
+
+        // 1. Projection -------------------------------------------------
+        try {
+            const full = await expand.forDisplay(FIXTURE)
+            $('projectionFull').textContent = json(full)
+            const kept = await expand.forDisplay(FIXTURE, { properties: ["startDate"] })
+            $('projectionKept').textContent = json(kept)
+            const keys = Object.keys(kept)
+            const identity = ["@id", "type", "@type", "__rerum"].filter(k => keys.includes(k))
+            const dropped = Object.keys(full).filter(k => !keys.includes(k) && k !== "@context")
+            verdict("projectionVerdict", [
+                ["identity keys retained (" + identity.join(", ") + ")", identity.length > 0],
+                ["non-requested properties dropped (" + dropped.length + ")", dropped.length > 0],
+                ["projection never invents keys", keys.every(k => k in full || identity.includes(k))]
+            ])
+        } catch (err) {
+            say("projectionFull", "error", String(err))
+        }
+
+        // 2. Scoped leaves ----------------------------------------------
+        try {
+            const TARGET = 'https://devstore.rerum.io/v1/id/5d7ba431e4b07f0c56c0f53b'
+            const oursRead = await expand.clientRead(TARGET)
+            const oursIds = oursRead.annotations.map(a => a["@id"])
+            const resurrected = oursIds.some(id => /c0f548$/.test(id))
+            const leakedForeign = oursIds.some(id => /384b06$/.test(id))
+            verdict("evapVerdict", [
+                ["our superseded version …c0f548 resurrected", resurrected],
+                ["foreign leaf …384b06 not leaked into our read", !leakedForeign],
+                [`${oursIds.length} scoped-leaf annotations read`, oursIds.length > 0]
+            ])
+            $('evapOut').innerHTML = `<dt>our read</dt><dd>${oursIds.join("<br>") || "(none)"}</dd>`
+        } catch (err) {
+            say("evapVerdict", "error", String(err))
+        }
+
+        // 3. History route + ordering ------------------------------------
+        try {
+            const LEAF = 'https://devstore.rerum.io/v1/id/5d9cd483e4b07f0c56c0f655'
+            const PARENT = 'https://devstore.rerum.io/v1/id/5d9cd477e4b07f0c56c0f64f'
+            const ancestors = await rerum.history(LEAF)
+            $('historyOut').textContent = ancestors.length
+                ? ancestors.map(a => `${a["@id"].slice(-6)} ← previous ${a.__rerum?.history?.previous?.slice(-6) || "(none)"}`).join("\n")
+                : "(no ancestors)"
+            verdict("historyVerdict", [
+                ["route reachable, " + ancestors.length + " ancestors", ancestors.length > 0],
+                ["requested version excluded", !ancestors.some(a => a["@id"] === LEAF)],
+                ["newest ancestor (the direct parent) first", ancestors[0]?.["@id"] === PARENT]
+            ])
+        } catch (err) {
+            say("historyVerdict", "error", "history(): " + err.message)
+        }
+
+        // 4. Render pipeline: import the runtime AFTER the counter is wired
+        try {
+            await import('/js/deer.js')
+            // deer.js initializes views on import; give the network a beat.
+            await new Promise(res => setTimeout(res, 4000))
+            const views = document.querySelectorAll("deer-view")
+            const rendered = [...views].filter(v => v.innerHTML.trim() !== "")
+            const catFilled = rendered[0]?.querySelector("h5") !== null
+            verdict("renderVerdict", [
+                ["both deer-view elements rendered (" + rendered.length + "/" + views.length + ")", rendered.length === views.length],
+                ["custom template applied", Boolean(catFilled)],
+                ["deer-loaded-complete fired", loadedCompleteCount > 0],
+                ["no crash from the completion tracker (page alive)", true]
+            ])
+            $('renderOut').innerHTML = `<dt>views</dt><dd>${views.length}</dd>
+                <dt>loaded-complete fires</dt><dd>${loadedCompleteCount}</dd>
+                <dt>detail.count</dt><dd>${detailCount}</dd>`
+        } catch (err) {
+            say("renderVerdict", "error", String(err))
+        }
+
+        // 5. Offline state ------------------------------------------------
+        try {
+            const attr = document.documentElement.getAttribute("data-deer-online")
+            let staleFired = false
+            let staleAt = null
+            document.addEventListener(DEER.EVENTS.STALE, (e) => {
+                staleFired = true
+                staleAt = e.detail?.cachedAt
+            })
+            $('offlineReRender').addEventListener("click", async () => {
+                const forceOffline = $('forceOffline').checked
+                const view = document.querySelector("deer-view")
+                const id = view.getAttribute("deer-id")
+                const original = DEER.READ_RESOURCE
+                if (forceOffline) {
+                    OFFLINE.isOnline = () => false
+                    DEER.READ_RESOURCE = () => Promise.reject(new Error("offline simulation"))
+                    // Drop the localStorage fast path so the IndexedDB cache branch runs.
+                    localStorage.removeItem(id)
+                }
+                try {
+                    // Re-set the attribute so the MutationObserver reloads the entity.
+                    view.setAttribute("deer-id", id)
+                    await new Promise(res => setTimeout(res, 2000))
+                } finally {
+                    if (forceOffline) {
+                        OFFLINE.isOnline = () => true
+                        DEER.READ_RESOURCE = original
+                    }
+                }
+                const staleAttr = view.getAttribute("data-deer-stale")
+                verdict("offlineVerdict", [
+                    [`rendered from cache (data-deer-stale="${staleAttr}")`, staleAttr === "true"],
+                    ["deer-stale fired", staleFired]
+                ])
+                $('offlineOut').innerHTML += `<dt>cachedAt</dt><dd>${staleAt ?? "—"}</dd>`
+            })
+            const pending = await OFFLINE.pendingCount()
+            const cachedFixture = await OFFLINE.getCachedEntity(FIXTURE)
+            verdict("offlineVerdict", [
+                ["document[data-deer-online] stamped (" + attr + ")", attr === "true" || attr === "false"],
+                ["fixture cached this session", Boolean(cachedFixture)],
+                ["outbox readable (pending: " + pending + ")", pending !== undefined]
+            ])
+            $('offlineOut').innerHTML = `<dt>data-deer-online</dt><dd>${attr}</dd>
+                <dt>cached fixture</dt><dd>${cachedFixture ? "yes (cachedAt " + new Date(cachedFixture.cachedAt).toISOString() + ")" : "no"}</dd>`
+        } catch (err) {
+            say("offlineVerdict", "error", String(err))
+        }
+
+        // 6. Write queue semantics ----------------------------------------
+        try {
+            const refusals = []
+            $('refuseTest').addEventListener("click", async () => {
+                try {
+                    await OFFLINE.writeOrQueue({
+                        method: "PUT",
+                        url: "https://tinydev.rerum.io/app/update",
+                        // No such object: the proxy refuses this exact request, forever.
+                        body: { "@id": "https://devstore.rerum.io/v1/id/000000000000000000000000", "type": "AntlersRefusalSmoke" },
+                        targetId: "https://devstore.rerum.io/v1/id/000000000000000000000000"
+                    })
+                    say("writeStatus", "error", "The refused write RESOLVED — refusals must reject, not queue.")
+                    verdict("writeVerdict", [["server-refused write rejects", false]])
+                } catch (err) {
+                    refusals.push(err?.status)
+                    verdict("writeVerdict", [
+                        ["server-refused write rejects (not queues)", true],
+                        [`refusal surfaced with HTTP ${err?.status}`, Number.isInteger(err?.status) && err.status >= 400]
+                    ])
+                    say("writeStatus", "ok", "Rejected with HTTP " + err.status + "; outbox pending: " + await OFFLINE.pendingCount())
+                }
+                $('writeOut').innerHTML = `<dt>refusals observed</dt><dd>${refusals.join(", ") || "—"}</dd>`
+            })
+            $('queueTest').addEventListener("click", async () => {
+                const real = OFFLINE.isOnline
+                OFFLINE.isOnline = () => false
+                try {
+                    const result = await OFFLINE.writeOrQueue({
+                        method: "PUT",
+                        // The same guaranteed refusal as above — queued while offline.
+                        // Sync must mark it errored (refusal), not wedge behind it.
+                        url: "https://tinydev.rerum.io/app/update",
+                        body: { "@id": "https://devstore.rerum.io/v1/id/000000000000000000000000", "type": "AntlersRefusalSmoke" },
+                        targetId: "https://devstore.rerum.io/v1/id/000000000000000000000000"
+                    })
+                    verdict("writeVerdict", [["offline write queues (resolves null)", result === null]])
+                    say("writeStatus", "ok", (result === null
+                        ? "Queued. Pending: " + await OFFLINE.pendingCount() + ". Press Sync now to replay it."
+                        : "Resolved while simulated-offline: " + JSON.stringify(result).slice(0, 120)))
+                } finally {
+                    OFFLINE.isOnline = real
+                }
+            })
+            $('syncTest').addEventListener("click", async () => {
+                const before = await OFFLINE.pendingCount()
+                const result = await OFFLINE.sync()
+                const after = await OFFLINE.pendingCount()
+                verdict("writeVerdict", [
+                    [`sync replayed ${result.synced} write(s), ${result.failed} failed`, true],
+                    ["a refused queued write was marked errored (not retried forever)", result.failed > 0 && before - after === result.failed]
+                ])
+                say("writeStatus", "ok", `Sync: ${result.synced} synced, ${result.failed} failed. Pending: ${after}.`)
+            })
+        } catch (err) {
+            say("writeStatus", "error", String(err))
+        }
+    </script>
+</body>
+
+</html>

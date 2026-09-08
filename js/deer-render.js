@@ -28,7 +28,7 @@ document.addEventListener(DEER.EVENTS.VIEW_RENDERED, (e) => {
     if (loadedCompleteFired) { return }
     const elem = e.detail?.element ?? e.target
     if (elem) { renderedViews.add(elem) }
-    const allViews = document.querySelectorAll(DEER.VIEW)
+    const allViews = Array.from(document.querySelectorAll(DEER.VIEW))
     if (allViews.length && allViews.every(v => renderedViews.has(v))) {
         loadedCompleteFired = true
         UTILS.broadcast(undefined, DEER.EVENTS.LOADED_COMPLETE, document, { count: allViews.length })
@@ -48,26 +48,34 @@ async function loadEntityForRender(elem, id) {
     try {
         obj = JSON.parse(localStorage.getItem(id))
     } catch (err) { }
-    if (!obj || !obj["@id"]) {
-        const cached = await OFFLINE.getCachedEntity(id)
-        if (cached && !OFFLINE.isOnline()) {
-            obj = cached.entity
-            OFFLINE.markStale(elem, cached.cachedAt)
-        } else {
-            obj = await DEER.READ_RESOURCE(id).catch(error => error)
-            if (obj) {
-                localStorage.setItem(obj["@id"] || obj.id, JSON.stringify(obj))
-                OFFLINE.cacheEntity(obj)
-            } else if (cached) {
-                // Fetch failed (e.g. transient error while online) — fall back to cache.
-                obj = cached.entity
-                OFFLINE.markStale(elem, cached.cachedAt)
-            } else {
-                return null
-            }
-        }
+    if (obj && obj["@id"]) {
+        // The localStorage fast path.  While offline this copy cannot be verified
+        // against the store, so the render is stale by definition.
+        if (!OFFLINE.isOnline()) { OFFLINE.markStale(elem, null) }
+        return obj
     }
-    return obj
+    const cached = await OFFLINE.getCachedEntity(id)
+    if (cached && !OFFLINE.isOnline()) {
+        OFFLINE.markStale(elem, cached.cachedAt)
+        return cached.entity
+    }
+    // A failed dereference must fall through to the cache, so an Error must
+    // never be allowed to masquerade as a document.
+    const fetched = await Promise.resolve(DEER.READ_RESOURCE(id)).then(found => {
+        if (found && found["@id"]) { return found }
+        return null
+    }).catch(error => null)
+    if (fetched) {
+        localStorage.setItem(fetched["@id"] || fetched.id, JSON.stringify(fetched))
+        OFFLINE.cacheEntity(fetched)
+        return fetched
+    }
+    if (cached) {
+        // Fetch failed (network error, HTTP failure, bad JSON) — fall back to the cache.
+        OFFLINE.markStale(elem, cached.cachedAt)
+        return cached.entity
+    }
+    return null
 }
 
 

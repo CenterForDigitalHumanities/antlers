@@ -135,8 +135,13 @@ export default {
             ? DEER.READ_RESOURCE(findId).then(obj => { if (obj) { OFFLINE.cacheEntity(obj) }; return obj })
             : OFFLINE.getCachedEntity(findId).then(cached => cached ? cached.entity : null)
         return dereference
-            .then(obj => UTILS.findByTargetId(findId)
-                .then(function (annos) {
+            .then(obj => {
+                // Offline (or a failed dereference) with nothing cached: the
+                // original object is the best available answer.  Downstream
+                // templates already tolerate an un-expanded document.
+                if (!obj) { return entity }
+                return UTILS.findByTargetId(findId)
+                    .then(function (annos) {
                     for (let i = 0; i < annos.length; i++) {
                         let body
                         try {
@@ -210,10 +215,12 @@ export default {
                         }
                     }
                     return obj
-                })).catch(err => {
-                    console.error("Error expanding object:" + err)
-                    return err
                 })
+            })
+            .catch(err => {
+                console.error("Error expanding object:" + err)
+                return err
+            })
         /**
          * Test if the metadata states that the second is an update to the first.
          * @param String assertion URI of the existing source of the assertion

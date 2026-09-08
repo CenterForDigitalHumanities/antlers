@@ -1,0 +1,8 @@
+{
+  "@context": "https://www.w3.org/ns/anno.jsonld",
+  "@id": "/cookbook/fixture_public_resource.json",
+  "@type": "Bookmark",
+  "name": "DEER consolidation proof fixture",
+  "about": "A public, non-RERUM JSON-LD resource for proof.html. README says DEER dereferences resources by URI through DEER.READ_RESOURCE; this file proves the read hook is not RERUM-bound.",
+  "tags": ["deer", "antlers", "fixture"]
+}
