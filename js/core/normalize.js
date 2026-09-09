@@ -7,6 +7,7 @@
  */
 
 import config from './config.js'
+import * as logger from './log.js'
 
 /**
  * Apply a requested cast to a single value.
@@ -60,7 +61,7 @@ function castValue(prop, asType) {
 export function getValue(property, alsoPeek = [], asType) {
     let prop
     if (property === undefined || property === null) {
-        if (config.DEBUG) { console.warn("Value of property to lookup is missing!") }
+        logger.debug("normalize.missing-value", "Value of property to lookup is missing!")
         return undefined
     }
     if (Array.isArray(property)) {

@@ -16,6 +16,8 @@
  */
 
 import config, { asInteger, INTEGER_DEFAULTS, SHIPPED_GENERATOR, SHIPPED_URLS } from './config.js'
+import * as logger from './log.js'
+import {} from './types.js'
 
 const JSON_HEADERS = { "Content-Type": "application/json; charset=utf-8" }
 
@@ -80,14 +82,115 @@ export function canonicalId(id) {
 }
 
 /**
- * RERUM records ids with whichever protocol the writing proxy sent, so queries
- * must match both forms.
+ * URIs a document's id may sit under for DEER to READ it — the union of the
+ * write boundary (ID_BASES) and the configured read extensions
+ * (READ_ID_BASES), for antlers#9: an entity hosted outside RERUM can be read
+ * and annotated; only the WRITES stay RERUM-bound.
+ *
+ * @returns {Array<String>} every URI prefix a readable id may sit under, in
+ * https form with trailing slashes, as the URL parser spells them.
+ */
+export function readBases() {
+    return [...config.ID_BASES, ...normalizeBases(config.READ_ID_BASES ?? [])]
+}
+
+/**
+ * Normalize URI prefixes for comparison: https, and carrying the trailing
+ * slash the URL parser spells them with.  Not mutating the config — a caller
+ * may hand a raw configured list.
+ *
+ * @param {Array<String>} bases raw prefixes.
+ * @returns {Array<String>} normalized prefixes, malformed entries dropped.
+ */
+function normalizeBases(bases) {
+    return bases
+        .filter(b => typeof b === "string" && b.length > 0)
+        .map(b => {
+            try {
+                const href = new URL(b.replace(/^http:/, "https:")).href
+                return href.endsWith("/") ? href : `${href}/`
+            } catch {
+                return undefined
+            }
+        })
+        .filter(b => b !== undefined)
+}
+
+/**
+ * The http and https spellings of a URI, for a `$in` clause.  A URI outside
+ * the bases returns an empty array so its clause matches nothing, which is
+ * how an annotation aimed at an unlisted host is refused rather than silently
+ * created (antlers#9: the read scope is a boundary, not a suggestion).
  *
  * @param {String} id the URI to vary.
- * @returns {Object} a Mongo-style `$in` clause over the http and https forms.
+ * @param {Array<String>} bases the URI prefixes a matchable id may sit under;
+ * defaults to the read boundary, nearest-scope first.
+ * @returns {Array<String>} both protocol spellings, or none.
  */
-export function httpsIdArray(id) {
-    return { $in: [canonicalId(id), id.replace(/^https?:/, 'http:')] }
+export function httpsVariants(id, bases = readBases()) {
+    if (typeof id !== "string" || id.length === 0) { return [] }
+    const known = (bases ?? []).some(b => id.startsWith(b) || canonicalId(id).startsWith(b))
+    if (!known) { return [] }
+    return [canonicalId(id), id.replace(/^https?:/, 'http:')]
+}
+
+/**
+ * The Mongo clause matching a URI across its http/https spellings, or nothing
+ * at all when the URI is outside the read boundary.
+ *
+ * @param {String} id the URI to vary.
+ * @param {Array<String>} bases the URI prefixes a matchable id may sit under.
+ * @returns {Object} a Mongo-style `$in` clause, or an always-false clause.
+ */
+export function idIn(id, bases = readBases()) {
+    return { $in: httpsVariants(id, bases) }
+}
+
+/**
+ * The deployment's read scope for generator filtering.
+ *
+ *  - `null` (explicit, antlers#9 exhibit mode): gather EVERY generator's
+ *    Annotations.  DEER-with-no-config rendering a Manifest many apps have
+ *    annotated.
+ *  - an Array: the configured list of agent URIs to gather.  A deployment
+ *    commonly sits between two — its own agent plus the applications it
+ *    consumes.
+ *  - `undefined` (default): wrap the single config.GENERATOR, preserving
+ *    DEER's law ("it only cares about the data it generates") out of the box.
+ *
+ * An empty Array gathers nothing — a deliberate "no annotations" choice, not
+ * a misconfiguration to paper over.
+ *
+ * @returns {Array<String>|null|undefined} the canonical agent URIs to gather,
+ * null for exhibit mode, undefined when the single-generator wrap should apply.
+ */
+export function readScopes() {
+    if (config.READ_GENERATORS === null) { return null }
+    if (Array.isArray(config.READ_GENERATORS)) { return config.READ_GENERATORS.map(canonicalId) }
+    return [requireGenerator()]
+}
+
+/**
+ * True when a URI sits inside the READ boundary: RERUM bases, plus the
+ * configured foreign bases a deployment annotates through (antlers#9).
+ * The same bare-URI rules as isRerumId apply — no query, no fragment, no
+ * trailing slash — because a document under annotation must still be
+ * addressable exactly.
+ *
+ * @param {String} id the URI to test.
+ * @returns {Boolean}
+ */
+export function isReadableId(id) {
+    if (typeof id !== "string") { return false }
+    let url
+    try {
+        url = new URL(canonicalId(id))
+    } catch {
+        return false
+    }
+    if (url.search || url.hash) { return false }
+    if (url.pathname.endsWith("/")) { return false }
+    return readBases().some(base => url.href.startsWith(base) && url.href.length > base.length)
 }
 
 /**
@@ -126,14 +229,18 @@ function requireGenerator() {
     if (isShippedGenerator) {
         if (generatorWarnedFor !== configState) {
             generatorWarnedFor = configState
-            console.warn(stillShipped.length === Object.keys(SHIPPED_URLS).length
-                ? "You will see everyone's annotations. Set config.GENERATOR to this deployment's own RERUM agent URI before shipping to production."
-                : `config.URLS is repointed at your own TinyNode but config.GENERATOR is still the shared sandbox agent (${SHIPPED_GENERATOR}). Your proxy writes with its own agent, so every record you create is filtered back out of every read — writes succeed, your own data never comes back. Set config.GENERATOR to your deployment's RERUM agent URI.`)
+            logger.warn("rerum.shipped-generator",
+                stillShipped.length === Object.keys(SHIPPED_URLS).length
+                    ? "You will see everyone's annotations. Set config.GENERATOR to this deployment's own RERUM agent URI before shipping to production."
+                    : `config.URLS is repointed at your own TinyNode but config.GENERATOR is still the shared sandbox agent (${SHIPPED_GENERATOR}). Your proxy writes with its own agent, so every record you create is filtered back out of every read — writes succeed, your own data never comes back. Set config.GENERATOR to your deployment's RERUM agent URI.`,
+                { generator: config.GENERATOR, shippedUrls: stillShipped })
         }
     }
     else if (proxyWarnedFor !== configState && stillShipped.length > 0) {
         proxyWarnedFor = configState
-        console.warn(`config.GENERATOR is an independent agent but some or all config.URLS still point at the shipped sandbox proxy.  That proxy will not use your independent agent. Repoint all URLS at your own TinyNode deployment to use your independent agent.`)
+        logger.warn("rerum.mismatched-proxy",
+            "config.GENERATOR is an independent agent but some or all config.URLS still point at the shipped sandbox proxy.  That proxy will not use your independent agent. Repoint all URLS at your own TinyNode deployment to use your independent agent.",
+            { generator: config.GENERATOR, shippedUrls: stillShipped })
     }
     return config.GENERATOR
 }
@@ -146,7 +253,7 @@ function requireGenerator() {
  * @throws {TypeError} when no generator is configured.
  */
 export function generatedBy() {
-    return httpsIdArray(requireGenerator())
+    return idIn(requireGenerator())
 }
 
 /**
@@ -324,22 +431,23 @@ async function handleResponse(response, { detail = false, json = true, url } = {
 /**
  * GET a single document by URI.
  *
- * RERUM-only, like every other read here.  DEER refuses foreign URIs rather
- * than degrading, and this is the module's public network surface — leaving the
- * one read ungated made the boundary depend on which caller you arrived
- * through.
+ * Inside the READ boundary, like every other read here (antlers#9: RERUM by
+ * default, plus any config.READ_ID_BASES a deployment annotates through).  A
+ * URI outside it is refused rather than degraded, and this is the module's
+ * public network surface — leaving the one read ungated made the boundary
+ * depend on which caller you arrived through.
  *
  * @param {String|Object} id the document URI (or an object carrying one).
- * @param {Object} options `fresh: true` busts the HTTP cache.  A read that
+ * @param {Object} [options] `fresh: true` busts the HTTP cache.  A read that
  * follows a write of this URI busts it automatically.
- * @returns {Promise<Object>} the document.  Rejects rather than throwing
+ * @returns {Promise<RerumDocument>} the document.  Rejects rather than throwing
  * synchronously on an unusable id, matching every other read on this module —
  * a mixed contract is what breaks a caller batching these under Promise.all.
  */
 export async function resolve(id, { fresh = false } = {}) {
     const uri = canonicalId(idOf(id))
-    if (!isRerumId(uri)) {
-        throw new TypeError(`${uri} is not a RERUM document id, and DEER reads RERUM documents only. Ids must be bare URIs on config.ID_BASES (currently ${JSON.stringify(config.ID_BASES)}) — no query string, no fragment, no trailing slash.`)
+    if (!isReadableId(uri)) {
+        throw new TypeError(`${uri} is not inside DEER's read boundary. Ids must be bare URIs — no query string, no fragment, no trailing slash — hosted by RERUM (config.ID_BASES) or by a configured config.READ_ID_BASES entry (read boundary: ${JSON.stringify(readBases())}).`)
     }
     const reload = needsReload(uri, uri) || fresh
     const response = await fetcher(uri, reload ? { cache: "reload" } : {})

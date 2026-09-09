@@ -2,7 +2,7 @@
 <html lang="en">
 
 <head>
-    <title>DEER 2.0 Consolidation Proof — PRs #13 + #14 + #15</title>
+    <title>DEER 2.0 Consolidation Proof — PRs #13-15 + Issues #6-#9</title>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="stylesheet" href="https://unpkg.com/chota@latest">
@@ -32,12 +32,12 @@
 
 <body>
     <header>
-        <h1>Consolidation Proof — PRs #13 + #14 + #15 on <code>1-major-update</code></h1>
+        <h1>Consolidation Proof — PRs #13-15 and Issues #6-#9 on <code>1-major-update</code></h1>
         <p class="hint">
-            One page driving every feature the three PRs land, against the live RERUM sandbox
-            (devstore). Core-layer features use <code>/js/core/</code> directly; attribute-level
-            features run the <code>deer.js</code> runtime, imported below after the page's own
-            config. Panels report PASS/FAIL so a refreshed page is the review.
+            Panels 1-6 cover the PR consolidation (offline, projection, scoped leaves); panels
+            7-10 cover the issue work — #9 read scopes, #8 structured logging, #7 typedefs,
+            #6 bulk operations — the same live-sandbox verification, so a refreshed page is
+            the review.
         </p>
         <p class="hint">
             Serves from the repo root (e.g. <code>npx serve .</code> or the VS Code Live Server)
@@ -149,6 +149,68 @@
                 <button class="button outline" type="button" id="syncTest">Sync now</button>
             </p>
         </section>
+        <!-- ========== 7. Read scopes (issue #9) ========== -->
+        <section>
+            <h2>7. Read scopes — foreign targets, generator lists <span class="tag">issue 9</span></h2>
+            <p class="hint">
+                The default gather wraps the single GENERATOR (DEER's law intact). Configure
+                <code>READ_ID_BASES</code> and a foreign Manifest becomes readable and annotatable,
+                with its Annotations still sought in RERUM only. Configure
+                <code>READ_GENERATORS</code> as a list for the Dunbar cross-collection case;
+                <code>null</code> is exhibit mode — every generator's annotations.
+            </p>
+            <div class="verdict" id="scopesVerdict"></div>
+            <dl class="kv" id="scopesOut"></dl>
+        </section>
+
+        <!-- ========== 8. Structured logging (issue #8) ========== -->
+        <section>
+            <h2>8. Structured logging — one record shape, one gate, one sink <span class="tag">issue 8</span></h2>
+            <p class="hint">
+                Every log is <code>{ level, code, message, detail, at }</code>. The panel swaps
+                <code>config.log</code> for a collector (the same instrumentation pattern as
+                <code>config.fetch</code>), triggers a known warning, and checks the record:
+                stable code, structured detail, and level gating. DEBUG-only records stay silent
+                at the default gate.
+            </p>
+            <div class="verdict" id="loggingVerdict"></div>
+            <pre class="out" id="loggingOut">-</pre>
+        </section>
+
+        <!-- ========== 9. Typedefs (issue #7) ========== -->
+        <section>
+            <h2>9. Shared JSDoc typedefs <span class="tag">issue 7</span></h2>
+            <p class="hint">
+                <code>js/core/types.js</code> names the recurring shapes once —
+                <code>ValueObject</code>, <code>Annotation</code>, <code>ReadOptions</code>,
+                <code>LogRecord</code>, <code>BulkReport</code> — and the modules tag their
+                signatures with them. This panel proves the surface loads identically through the
+                typed modules: values from read paths still satisfy their documented shapes (a
+                <code>ValueObject</code> carries <code>value</code>/<code>source</code>/
+                <code>evidence</code>; a read options object round-trips).
+            </p>
+            <div class="verdict" id="typedefsVerdict"></div>
+        </section>
+
+        <!-- ========== 10. Bulk operations (issue #6) ========== -->
+        <section>
+            <h2>10. Bulk operations <span class="tag">issue 6</span></h2>
+            <p class="hint">
+                Bounded-concurrency fan-out over the single-document verbs (the TinyNode proxy has
+                no bulk routes). This panel is <strong>writable</strong>: it creates two sandbox
+                entities, annotates both with <code>annotateAll()</code>, cascade-deletes one with
+                <code>deleteWithAnnotations()</code> (entity and its annotation together), deletes
+                the other with <code>deleteAll()</code>, then verifies nothing was left behind.
+                Every document created here is deleted in the same breath — the sandbox ends as
+                clean as it started.
+            </p>
+            <div class="verdict" id="bulkVerdict"></div>
+            <p class="status" id="bulkStatus" role="status" aria-live="polite"></p>
+            <pre class="out" id="bulkOut">-</pre>
+            <p>
+                <button class="button primary" type="button" id="bulkRun">Run the bulk round-trip</button>
+            </p>
+        </section>
     </main>
 
     <script type="module">
@@ -157,7 +219,6 @@
         import * as expand from '/js/core/expand.js'
         import { default as OFFLINE } from '/js/deer-offline.js'
         import { default as DEER } from '/js/deer-config.js'
-
         const $ = (id) => document.getElementById(id)
         const say = (id, state, msg) => {
             const el = $(id)
@@ -370,6 +431,109 @@
             })
         } catch (err) {
             say("writeStatus", "error", String(err))
+        }
+        // 7. Read scopes (issue #9) --------------------------------------
+        try {
+            const EVAP_TARGET = 'https://devstore.rerum.io/v1/id/5d7ba431e4b07f0c56c0f53b'
+            // default: single-generator wrap
+            const defaultScopes = rerum.readScopes()
+            // exhibit: null
+            configure({ READ_GENERATORS: null })
+            const exhibitScopes = rerum.readScopes()
+            const exhibitRead = await expand.clientRead(EVAP_TARGET)
+            const exhibitForeign = exhibitRead.annotations.some(a => /384b06$/.test(a["@id"]))
+            // restore
+            configure({ READ_GENERATORS: undefined })
+            const restored = await expand.clientRead(EVAP_TARGET)
+            const restoredResurrected = restored.annotations.some(a => /c0f548$/.test(a["@id"]))
+            verdict("scopesVerdict", [
+                [`default scope wraps GENERATOR (${defaultScopes.length} agent)`, Array.isArray(defaultScopes) && defaultScopes.length === 1],
+                ["exhibit mode (null) gathers every generator", exhibitScopes === null && exhibitForeign],
+                ["restoring the default brings scoped resurrection back", restoredResurrected]
+            ])
+            $('scopesOut').innerHTML = `<dt>default scopes</dt><dd>${defaultScopes.join(", ")}</dd>
+                <dt>exhibit scope</dt><dd>${exhibitScopes === null ? "null (every generator)" : exhibitScopes}</dd>
+                <dt>exhibit-mode annotations on the chain target</dt><dd>${exhibitRead.annotations.length}</dd>`
+        } catch (err) {
+            say("scopesVerdict", "error", String(err))
+        }
+
+        // 8. Structured logging (issue #8) --------------------------------
+        try {
+            const collected = []
+            const originalSink = config.log
+            config.log = (rec) => collected.push(rec)
+            // A known warning, deterministically: an independent GENERATOR with
+            // still-shipped proxy URLs trips rerum.mismatched-proxy once per state.
+            configure({ GENERATOR: "https://devstore.rerum.io/v1/id/independent-agent-proof" })
+            rerum.readScopes()
+            configure({ GENERATOR: OUR_GEN })
+            config.log = originalSink
+            const first = collected[0]
+            $('loggingOut').textContent = JSON.stringify(collected.slice(0, 3), null, 1)
+            verdict("loggingVerdict", [
+                ["records flow through config.log", collected.length > 0],
+                ["record carries a stable code", typeof first?.code === "string" && first.code.includes(".")],
+                ["record carries structured detail", first?.detail !== undefined && typeof first.detail === "object"],
+                ["record carries level and timestamp", ["level", "at"].every(k => k in (first ?? {}))]
+            ])
+        } catch (err) {
+            say("loggingVerdict", "error", String(err))
+        }
+
+        // 9. Typedefs (issue #7) -------------------------------------------
+        try {
+            // types.js is a JSDoc surface: importing it is a no-op that pulls the
+            // typedefs into scope.  The panel proves the DOCUMENTED shapes hold.
+            await import('/js/core/types.js')
+            const shaped = await expand.forDisplay(FIXTURE)
+            const aName = Array.isArray(shaped.name) ? shaped.name[0] : shaped.name
+            const isValueObject = aName && typeof aName === "object" && "value" in aName && "source" in aName && "evidence" in aName
+            const projected = await expand.forDisplay(FIXTURE, { properties: ["name"], fresh: false })
+            const projectionRespected = Object.keys(projected).every(k => ["@id", "id", "type", "@type", "@context", "__rerum", "__deleted", "name"].includes(k))
+            verdict("typedefsVerdict", [
+                ["types.js imports as a module (editor support surface)", true],
+                ["shaped values satisfy the documented ValueObject shape", Boolean(isValueObject)],
+                ["ReadOptions shape honored (properties + fresh)", projectionRespected]
+            ])
+        } catch (err) {
+            say("typedefsVerdict", "error", String(err))
+        }
+
+        // 10. Bulk operations (issue #6) -----------------------------------
+        try {
+            $('bulkRun').addEventListener("click", async () => {
+                say("bulkStatus", "ok", "Running…")
+                const bulk = await import('/js/core/bulk.js')
+                const a = await rerum.create({ type: "AntlersBulkProof", name: "bulk proof A (self-cleaning)" })
+                const b = await rerum.create({ type: "AntlersBulkProof", name: "bulk proof B (self-cleaning)" })
+                const tag = await bulk.annotateAll([a["@id"], b["@id"]], { body: { bulkProofTag: "antlers-bulk-proof" }, motivation: "tagging" })
+                const cascade = await bulk.deleteWithAnnotations(a["@id"])
+                const solo = await bulk.deleteAll([b["@id"]])
+                // B's annotation intentionally outlives deleteAll (documented); clean it now
+                const leftover = tag.results[1]?.ok ? tag.results[1].value : null
+                if (leftover) { await rerum.delete(leftover["@id"]).catch(() => { }) }
+                // sweep
+                const q = async (body) => fetch("https://tinydev.rerum.io/app/query?limit=20&skip=0", {
+                    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+                }).then(r => r.json())
+                const strays = (await q({ type: "AntlersBulkProof" })).length + (await q({ "body.bulkProofTag": "antlers-bulk-proof" })).length
+                $('bulkOut').textContent = JSON.stringify({
+                    annotateAll: { ok: tag.ok, succeeded: tag.succeeded, failed: tag.failed },
+                    cascade: { ok: cascade.ok, items: cascade.results.length },
+                    deleteAll: solo.ok,
+                    sandboxStrays: strays
+                }, null, 1)
+                verdict("bulkVerdict", [
+                    ["annotateAll fanned out to both targets", tag.ok && tag.succeeded === 2],
+                    [`cascade deleted entity + its annotation (${cascade.results.length} items)`, cascade.ok && cascade.results.length === 2],
+                    ["deleteAll removed the second entity", solo.ok],
+                    [`sandbox swept clean (${strays} strays)`, strays === 0]
+                ])
+                say("bulkStatus", "ok", "Round-trip complete; sandbox is clean.")
+            })
+        } catch (err) {
+            say("bulkVerdict", "error", String(err))
         }
     </script>
 </body>

@@ -17,6 +17,8 @@
 
 import config from './config.js'
 import { getValue } from './normalize.js'
+import * as logger from './log.js'
+import {} from './types.js'
 
 /**
  * First-class properties of the entity itself — passed through shaping
@@ -121,8 +123,8 @@ export function requireDocument(doc, context = "This read") {
  * a partly merged document.
  *
  * @param {any} val asserted value of the incoming annotation.
- * @param {Object} fromAnno parent annotation of the asserted value, as a handy metadata container.
- * @returns {Object} with `value`, `source`, and `evidence` keys.
+ * @param {Annotation} [fromAnno] parent annotation of the asserted value, as a handy metadata container.
+ * @returns {ValueObject} with `value`, `source`, and `evidence` keys.
  */
 export function buildValueObject(val, fromAnno = {}) {
     if (val !== null && typeof val === "object" && SHAPED.has(val)) { return val }
@@ -203,7 +205,7 @@ function inAssertionOrder(annotations) {
  * objects.  Values already shaped during the merge pass through unchanged.
  *
  * @param {Object} obj a resolved or merged entity document.  Not mutated.
- * @returns {Object} the DEER-shaped document.
+ * @returns {ShapedEntity} the DEER-shaped document.
  */
 export function shapeValues(obj) {
     const shaped = {}
@@ -232,14 +234,14 @@ export function shapeValues(obj) {
  * with `provenance: false` it produces the same kind of document `/expanded`
  * returns: raw merged values, no `{value, source, evidence}` wrapper anywhere.
  *
- * @param {Object} entity the resolved entity document, RAW — pass the fetched
+ * @param {RerumDocument} entity the resolved entity document, RAW — pass the fetched
  * document, never an already-shaped one.
- * @param {Array<Object>} annotations annotation documents targeting the entity,
- * already filtered to this deployment's.
- * @param {Object} options `provenance` (default true) wraps each merged value in
+ * @param {Annotation[]} annotations annotation documents targeting the entity,
+ * already filtered to this deployment's scope.
+ * @param {Object} [options] `provenance` (default true) wraps each merged value in
  * a value object carrying `source.citationSource`. Pass false for a display-strategy
  * merge.
- * @returns {Object} a new object with the assertions applied.  Not shaped.
+ * @returns {RerumDocument} a new object with the assertions applied.  Not shaped.
  */
 export function mergeAssertions(entity, annotations = [], { provenance = true } = {}) {
     const assertOn = structuredClone(requireDocument(entity, "mergeAssertions"))
@@ -279,11 +281,15 @@ export function mergeAssertions(entity, annotations = [], { provenance = true } 
         const key = keys[0]
         const val = body[key]
         if (FORBIDDEN_KEYS.has(key)) {
-            if (config.DEBUG) { console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts the reserved key '${key}'; ignoring.`) }
+            logger.debug("assertions.reserved-key",
+                `Annotation ${anno["@id"] ?? anno.id} asserts the reserved key '${key}'; ignoring.`,
+                { annotation: anno["@id"] ?? anno.id, key })
             continue
         }
         if (IDENTITY_KEYS.includes(key)) {
-            if (config.DEBUG) { console.warn(`Annotation ${anno["@id"] ?? anno.id} asserts identity key '${key}'; ignoring.`) }
+            logger.debug("assertions.identity-key",
+                `Annotation ${anno["@id"] ?? anno.id} asserts identity key '${key}'; ignoring.`,
+                { annotation: anno["@id"] ?? anno.id, key })
             continue
         }
         // A null or undefined member is merged RAW either way and dropped later by shapeValues.
@@ -297,9 +303,9 @@ export function mergeAssertions(entity, annotations = [], { provenance = true } 
  * Merge targeting annotations onto an entity and DEER-shape the result — the
  * editing path's read, provenance intact.
  *
- * @param {Object} entity the resolved entity document, RAW.
- * @param {Array<Object>} annotations annotation documents targeting the entity.
- * @returns {Object} a new, DEER-shaped object with the assertions applied.
+ * @param {RerumDocument} entity the resolved entity document, RAW.
+ * @param {Annotation[]} annotations annotation documents targeting the entity.
+ * @returns {ShapedEntity} a new, DEER-shaped object with the assertions applied.
  */
 export function applyAssertions(entity, annotations = []) {
     return shapeValues(mergeAssertions(entity, annotations))

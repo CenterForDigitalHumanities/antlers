@@ -17,6 +17,7 @@
  */
 
 import { default as DEER } from './deer-config.js'
+import * as logger from './core/log.js'
 
 const DB_NAME = "deer-offline"
 const DB_VERSION = 1
@@ -107,7 +108,7 @@ const OFFLINE = {
             await withStore(CACHE_STORE, "readwrite", (store) => store.put({ id, entity: obj, cachedAt: Date.now() }))
             return true
         } catch (err) {
-            console.warn("DEER could not cache entity " + id + " offline.", err)
+            logger.warn("offline.cache-failed", "DEER could not cache entity " + id + " offline.", { id, error: err })
             return false
         }
     },
@@ -124,7 +125,7 @@ const OFFLINE = {
             if (!row) { return null }
             return { entity: row.entity, cachedAt: row.cachedAt }
         } catch (err) {
-            console.warn("DEER could not read cached entity " + id + ".", err)
+            logger.warn("offline.cache-read-failed", "DEER could not read cached entity " + id + ".", { id, error: err })
             return null
         }
     },
@@ -148,7 +149,7 @@ const OFFLINE = {
             OFFLINE.broadcastQueued()
             return queueId
         } catch (err) {
-            console.error("DEER could not queue an offline write.", err)
+            logger.error("offline.queue-failed", "DEER could not queue an offline write.", { op: { method: op.method, url: op.url }, error: err })
             return null
         }
     },
@@ -225,7 +226,7 @@ const OFFLINE = {
                     throw err
                 }
                 // Network failure while "online" — queue it and let sync retry.
-                console.warn("DEER write failed; queueing for offline sync.", err)
+                logger.warn("offline.write-queued", "DEER write failed; queueing for offline sync.", { url: op.url, method: op.method, status: err?.status, error: err })
             }
         }
         await OFFLINE.queueWrite(op)
@@ -249,7 +250,7 @@ const OFFLINE = {
                 req.onerror = () => reject(req.error)
             })
         } catch (err) {
-            console.warn("DEER could not read the outbox to sync.", err)
+            logger.warn("offline.outbox-read-failed", "DEER could not read the outbox to sync.", { error: err })
             return { synced: 0, failed: 0 }
         }
         pending = (pending || []).filter(op => op.status === "pending").sort((a, b) => a.queueId - b.queueId)
@@ -267,13 +268,17 @@ const OFFLINE = {
                 if (OFFLINE._isRefusal(err?.status)) {
                     // The server refuses this exact request; it can never succeed as queued.
                     await OFFLINE.markError(op.queueId, err.message)
-                    console.error("DEER queued write " + op.queueId + " was refused by the server; marking it errored and continuing.", err)
+                    logger.error("offline.sync-refused",
+                        "DEER queued write " + op.queueId + " was refused by the server; marking it errored and continuing.",
+                        { queueId: op.queueId, status: err?.status, error: err })
                     continue
                 }
                 // Server (5xx other than the proxy's refusal translation) or network
                 // failure: leave it pending for the next sync, and stop this pass
                 // to preserve enqueue order.
-                console.error("DEER failed to sync queued write " + op.queueId + "; stopping to preserve order.", err)
+                logger.error("offline.sync-failed",
+                    "DEER failed to sync queued write " + op.queueId + "; stopping to preserve order.",
+                    { queueId: op.queueId, error: err })
                 break
             }
         }
@@ -296,7 +301,7 @@ const OFFLINE = {
                 return getReq
             })
         } catch (err) {
-            console.warn("DEER could not mark write " + queueId + " as synced.", err)
+            logger.warn("offline.mark-synced-failed", "DEER could not mark write " + queueId + " as synced.", { queueId, error: err })
         }
     },
 
@@ -316,7 +321,7 @@ const OFFLINE = {
                 return getReq
             })
         } catch (err) {
-            console.warn("DEER could not mark write " + queueId + " as errored.", err)
+            logger.warn("offline.mark-error-failed", "DEER could not mark write " + queueId + " as errored.", { queueId, error: err })
         }
     },
 

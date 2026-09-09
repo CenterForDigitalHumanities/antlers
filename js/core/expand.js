@@ -11,7 +11,9 @@
 
 import config, { asInteger, INTEGER_DEFAULTS } from './config.js'
 import * as rerum from './rerum.js'
+import * as logger from './log.js'
 import { annotationTypeClauses, applyAssertions, isAnnotationType, mergeAssertions, project, requireDocument, shapeValues } from './assertions.js'
+import {} from './types.js'
 
 /**
  * Keep only the documents that are actually Annotations.
@@ -20,29 +22,43 @@ const onlyAnnotations = (finds) => (Array.isArray(finds) ? finds : [])
     .filter(doc => doc && isAnnotationType([doc.type, doc["@type"]]))
 
 /**
- * Refuse an id DEER cannot work with.  DEER creates entities in RERUM and
- * annotates them through the RERUM API; an entity outside RERUM has no
- * `/expanded` merge, no queryable annotations, and nothing DEER could write
- * back to.
+ * Refuse an id DEER cannot READ.  DEER writes entities in RERUM only, but a
+ * read may reach a configured foreign base (antlers#9): a hosted Manifest is
+ * a legal target, and its Annotations are still sought in RERUM.
  *
  * The common cause is not foreign data at all but a RERUM deployment on a host
  * config.ID_BASES does not list, so the message names that first.
+ *
+ * @param {String} uri the entity URI.
+ * @throws {TypeError} when the id is not inside the read boundary.
+ */
+function requireReadableId(uri) {
+    if (rerum.isReadableId(uri)) { return }
+    throw new TypeError(`${uri} is not inside DEER's read boundary. Ids must be bare URIs — no query string, no fragment, no trailing slash — hosted by RERUM (config.ID_BASES) or by a configured config.READ_ID_BASES entry (read boundary: ${JSON.stringify(rerum.readBases())}).`)
+}
+
+/**
+ * Refuse an id DEER cannot WRITE.  A read may reach a foreign base; an update
+ * or overwrite may not — RERUM versions only what it stores.
  *
  * @param {String} uri the entity URI.
  * @throws {TypeError} when the id is not RERUM-hosted.
  */
 function requireRerumId(uri) {
     if (rerum.isRerumId(uri)) { return }
-    throw new TypeError(`${uri} is not hosted by RERUM, and DEER reads and writes RERUM entities only. Ids must be bare URIs — no query string, no fragment, no trailing slash. If this IS your RERUM deployment, add its id base to config.ID_BASES (currently ${JSON.stringify(config.ID_BASES)}).`)
+    throw new TypeError(`${uri} is not hosted by RERUM, and DEER writes RERUM entities only. Ids must be bare URIs — no query string, no fragment, no trailing slash. If this IS your RERUM deployment, add its id base to config.ID_BASES (currently ${JSON.stringify(config.ID_BASES)}).`)
 }
 
 /**
  * The properties an Annotation can carry the URI of its target under.
  * KEEP IN STEP WITH THE SERVER: a key the server matches and this list does not
  * is an annotation `/expanded` merges and the client read never sees.
+ * Configurable (antlers#9): a deployment annotating through other
+ * vocabularies sets config.TARGET_KEYS rather than forking the read.
  */
-const TARGET_KEYS = ["target", "target.@id", "target.id",
-    "target.source", "target.source.@id", "target.source.id"]
+const targetKeys = () => (Array.isArray(config.TARGET_KEYS) && config.TARGET_KEYS.length > 0)
+    ? config.TARGET_KEYS : ["target", "target.@id", "target.id",
+        "target.source", "target.source.@id", "target.source.id"]
 
 /** Escape the RegExp metacharacters in a literal so it matches only itself. */
 const escapeRegex = (literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -50,12 +66,15 @@ const escapeRegex = (literal) => literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 /**
  * A paged query for every document matching a query.
  *
+ * Exported for js/core/bulk.js's cascade gather, which must page exactly the
+ * way the reads do (antlers#6).
+ *
  * @param {Object} body the query document.
  * @param {String} label what is being read, for the refusal message.
  * @returns {Promise<Array<Object>>} every matching document.
  * @throws {RangeError} past config.MAX_RESULTS, rather than returning a partial merge.
  */
-async function queryAll(body, label) {
+export async function queryAll(body, label) {
     // Guarded: a deployment that configures LIMIT at 0 or below would otherwise
     // page forever, asking for nothing each time.
     // This stops clients from silently truncating.
@@ -94,14 +113,17 @@ async function queryAll(body, label) {
  * resource and which an exact match does not catch.  `target.source` is the
  * W3C SpecificResource.
  *
+ * Exported for js/core/bulk.js's cascade gather, which must match the same
+ * shapes the reads do (antlers#6).
+ *
  * @param {String} uri the entity URI.
  * @returns {Array<Object>} clauses for a Mongo-style `$or`.
  */
-function targetingClauses(uri) {
-    const uris = rerum.httpsIdArray(uri)
+export function targetingClauses(uri) {
+    const uris = rerum.idIn(uri)
     const fragments = ["http", "https"]
         .map(scheme => `^${escapeRegex(uri.replace(/^https?/, scheme))}#`)
-    return TARGET_KEYS.flatMap(key => [
+    return targetKeys().flatMap(key => [
         { [key]: uris },
         ...fragments.map(pattern => ({ [key]: { "$regex": pattern } }))
     ])
@@ -109,45 +131,57 @@ function targetingClauses(uri) {
 
 /**
  * Every leaf Annotation targeting any URI the record answers to, from any
- * generator.  Generator scoping is resolved client-side via history walks.
+ * generator.  Generator scoping is applied by the caller — scoped-leaf
+ * resolution resolves it client-side via history walks, which is what makes
+ * a generator LIST (antlers#9) possible: each scope keeps its own last word.
+ *
+ * An undefined scope (the exhibit case) gathers every generator's leaves
+ * as-is, since there is no "other generator" to walk back from.
  *
  * @param {Array<String>} uris every URI to match as a target.
  * @returns {Object} the query document.
  */
 function targetingQuery(uris) {
-    return {
+    const query = {
         "$and": [
             { "$or": uris.flatMap(targetingClauses) },
             { "$or": annotationTypeClauses() },
             { "__rerum.history.next": [] }
         ]
     }
+    return query
 }
 
 /**
  * Resolve scoped leaves from a set of leaf annotations: for each chain, keep
- * the most recent version authored by this deployment's generator.
+ * the most recent version authored by a generator in the deployment's read
+ * scope.
  *
- * Leaves already from our generator are kept as-is.  Leaves from other
- * generators trigger a `history()` walk back through the ancestor chain to find
- * the most recent version we authored.  Sibling leaves that share a
+ * Leaves already in scope are kept as-is.  Leaves from a foreign generator
+ * trigger a `history()` walk back through the ancestor chain to find the
+ * most recent in-scope version.  Sibling leaves that share a
  * `__rerum.history.previous` are two branches of one chain, so only the first
  * walks and the rest reuse its result.
  *
  * The history endpoint returns ancestors newest first and excludes the leaf
- * itself, so the first of OUR versions in walk order is the most recent.
+ * itself, so the first in-scope version in walk order is the most recent.
  *
- * @param {Array<Object>} leaves leaf annotation documents from the targeting query.
- * @returns {Promise<Array<Object>>} the scoped leaves, ready to merge.
+ * @param {Annotation[]} leaves leaf annotation documents from the targeting query.
+ * @returns {Promise<Annotation[]>} the scoped leaves, ready to merge.
  */
 async function resolveScopedLeaves(leaves) {
+    const scopes = rerum.readScopes()
+    // Exhibit mode: every leaf is in scope, and there is no "other generator"
+    // to walk back from — the global leaf IS the last word.
+    if (scopes === null) { return [...leaves] }
     const ours = new Map()
     const walkedChains = new Map()
-    const ourGen = rerum.canonicalId(config.GENERATOR)
+    const scopeSet = new Set(scopes)
+    if (scopeSet.size === 0) { return [] }
     for (const leaf of leaves) {
         const leafId = rerum.canonicalId(leaf?.["@id"] ?? leaf?.id)
         if (typeof leafId !== "string") { continue }
-        if (rerum.canonicalId(leaf?.__rerum?.generatedBy) === ourGen) {
+        if (scopeSet.has(rerum.canonicalId(leaf?.__rerum?.generatedBy))) {
             ours.set(leafId, leaf)
             continue
         }
@@ -161,11 +195,11 @@ async function resolveScopedLeaves(leaves) {
         }
         try {
             const ancestors = await rerum.history(leafId)
-            // Ancestors arrive newest first.  The first of OUR versions is the
-            // most recent word this deployment had on this chain.
+            // Ancestors arrive newest first.  The first in-scope version is the
+            // most recent word a scoped generator had on this chain.
             const found = []
             for (const version of ancestors) {
-                if (rerum.canonicalId(version?.__rerum?.generatedBy) !== ourGen) { continue }
+                if (!scopeSet.has(rerum.canonicalId(version?.__rerum?.generatedBy))) { continue }
                 const versionId = rerum.canonicalId(version?.["@id"] ?? version?.id)
                 if (typeof versionId !== "string") { continue }
                 found.push({ ...version, "@id": versionId })
@@ -190,15 +224,16 @@ async function resolveScopedLeaves(leaves) {
  * walk back to the most recent version this deployment authored.
  *
  * @param {String|Object} id the entity URI or an object carrying one.
- * @param {Object} options `fresh` busts the HTTP cache on the entity GET.
- * @returns {Promise<{entity: Object, annotations: Array<Object>}>} raw documents:
- * the entity, and the scoped-leaf annotations for this deployment.
- * @throws {TypeError} when the id is not RERUM-hosted, or no generator is configured.
+ * @param {ReadOptions} [options] `fresh` busts the HTTP cache on the entity GET.
+ * @returns {Promise<ClientRead>} raw documents: the entity, and the scoped-leaf
+ * annotations for this deployment.
+ * @throws {TypeError} when the id is not inside the read boundary, or the
+ * generator scope is misconfigured.
  */
 export async function clientRead(id, { fresh = false } = {}) {
     const uri = rerum.idOf(id)
-    requireRerumId(uri)
-    rerum.generatedBy()
+    requireReadableId(uri)
+    rerum.readScopes()
     const annotationQuery = targetingQuery([uri])
     const [resolved, list] = await Promise.all([
         rerum.resolve(uri, { fresh }),
@@ -256,40 +291,53 @@ async function aliasTargetedAnnotations(entity, requestedUri, found) {
  * Resolve an entity for display, RAW — the server-side annotation merge exactly
  * as `/expanded` returns it.  Cacheable (the server sends max-age=86400,
  * must-revalidate) and carries no annotation provenance.
- * DEER filters every read by the one agent in config.GENERATOR, so the server request
- * and the client fallback below always merge the same annotations.
+ *
+ * Two scopes fall back to the client read (antlers#9): a foreign id has no
+ * `/expanded` route, and a read gathering MORE than one generator cannot be
+ * asked of the server, whose `?generator=` takes a single agent.  DEER's
+ * single-generator default uses the server merge, so the common case is one
+ * request.
  *
  * @param {String|Object} id the entity URI or an object carrying one.
- * @param {Object} options `fresh: true` busts the HTTP cache (read-after-write).
- * @returns {Promise<Object>} the merged entity document, unshaped.
- * @throws {TypeError} when the id is not RERUM-hosted.
+ * @param {ReadOptions} [options] `fresh: true` busts the HTTP cache (read-after-write).
+ * @returns {Promise<RerumDocument>} the merged entity document, unshaped.
+ * @throws {TypeError} when the id is outside the read boundary.
  */
 export async function forDisplayRaw(id, { fresh = false } = {}) {
     const uri = rerum.idOf(id)
-    requireRerumId(uri)
-    const { document, gathered, merged } = await rerum.expanded(uri, { fresh })
-    if (gathered === null || merged === null) {
-        const { entity, annotations } = await clientRead(uri, { fresh })
-        return mergeAssertions(entity, annotations, { provenance: false })
+    requireReadableId(uri)
+    const scopes = rerum.readScopes()
+    // The server merge needs a RERUM record AND a single generator to ask for.
+    // Foreign bases (antlers#9) have no /expanded route; exhibit mode and a
+    // generator LIST cannot name one agent in ?generator=.
+    const serverMerge = rerum.isRerumId(uri) && Array.isArray(scopes) && scopes.length === 1
+    if (serverMerge) {
+        const { document, gathered, merged } = await rerum.expanded(uri, { fresh })
+        if (gathered === null || merged === null) {
+            const { entity, annotations } = await clientRead(uri, { fresh })
+            return mergeAssertions(entity, annotations, { provenance: false })
+        }
+        if (gathered !== merged && logger.debug("expand.merge-counts",
+            `${uri}: server merged ${merged} of ${gathered} annotations. The rest assert nothing DEER reads (multi-key, multi-body, or protected-key bodies).`,
+            { uri, gathered, merged })) { /* gated: emitted only under DEBUG */ }
+        return requireDocument(document, `The expanded read of ${uri}`)
     }
-    if (gathered !== merged && config.DEBUG) {
-        console.debug(`${uri}: server merged ${merged} of ${gathered} annotations. The rest assert nothing DEER reads (multi-key, multi-body, or protected-key bodies).`)
-    }
-    return requireDocument(document, `The expanded read of ${uri}`)
+    const { entity, annotations } = await clientRead(uri, { fresh })
+    return mergeAssertions(entity, annotations, { provenance: false })
 }
 
 /**
  * Resolve an entity for display, DEER-shaped.
  *
  * @param {String|Object} id the entity URI or an object carrying one.
- * @param {Object} options `fresh: true` busts the HTTP cache (read-after-write).
+ * @param {ReadOptions} [options] `fresh: true` busts the HTTP cache (read-after-write).
  *   `properties` (Array<String>|String) projects the result down to those
  *   properties plus identity keys — a display that only wants `label`, `age`,
  *   and `gravatar_uri` requests exactly those.
- * @returns {Promise<Object>} DEER-shaped entity: asserted properties become
- * `{value, source, evidence}` objects (arrays thereof when multivalued).  No
- * value carries a `citationSource` — the display path never has one to carry.
- * @throws {TypeError} when the id is not RERUM-hosted.
+ * @returns {Promise<ShapedEntity>} DEER-shaped entity: asserted properties become
+ * ValueObjects (arrays thereof when multivalued).  No value carries a
+ * `citationSource` — the display path never has one to carry.
+ * @throws {TypeError} when the id is outside the read boundary.
  */
 export async function forDisplay(id, options) {
     const shaped = shapeValues(await forDisplayRaw(id, options))
@@ -302,10 +350,10 @@ export async function forDisplay(id, options) {
  * carry `source.citationSource` so the form knows which annotation to update.
  *
  * @param {String|Object} id the entity URI or an object carrying one.
- * @param {Object} options `properties` (Array<String>|String) projects the
+ * @param {ReadOptions} [options] `properties` (Array<String>|String) projects the
  * result down to those properties plus identity keys.
- * @returns {Promise<Object>} DEER-shaped entity with full annotation provenance.
- * @throws {TypeError} when the id is not RERUM-hosted.
+ * @returns {Promise<ShapedEntity>} DEER-shaped entity with full annotation provenance.
+ * @throws {TypeError} when the id is outside the read boundary.
  */
 export async function forEditing(id, options) {
     const { entity, annotations } = await clientRead(rerum.idOf(id), { fresh: true })

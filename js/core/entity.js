@@ -11,6 +11,7 @@
 import config from './config.js'
 import * as rerum from './rerum.js'
 import * as expand from './expand.js'
+import * as logger from './log.js'
 import { applyAssertions, markShaped, requireDocument, shapeValues } from './assertions.js'
 
 const entityMap = new Map()
@@ -387,8 +388,10 @@ class Entity extends EventTarget {
      */
     async assertionsForEditing() {
         if (this.#adopted !== undefined) { return this.#adopted.assertionsForEditing() }
-        if (this.#strategy !== "editing" && config.DEBUG) {
-            console.warn(`${this.#id}: upgraded to the editing read on demand, discarding a display read already paid for. Reserve the ids your forms carry with reserveEditing() at scan time so the first read is the right one.`)
+        if (this.#strategy !== "editing") {
+            logger.debug("entity.upgraded-on-demand",
+                `${this.#id}: upgraded to the editing read on demand, discarding a display read already paid for. Reserve the ids your forms carry with reserveEditing() at scan time so the first read is the right one.`,
+                { id: this.#id })
         }
         await this.upgradeToEditing()
         if (this.#adopted !== undefined) { return this.#adopted.assertionsForEditing() }
@@ -698,7 +701,9 @@ class Entity extends EventTarget {
             try {
                 return (typeof handler === "function") ? handler(ev) : handler.handleEvent(ev)
             } catch (err) {
-                console.error(`${this.id}: a subscriber threw while being caught up on '${ev.detail.action}'.`, err)
+                logger.error("entity.subscriber-threw",
+                    `${this.id}: a subscriber threw while being caught up on '${ev.detail.action}'.`,
+                    { id: this.id, action: ev.detail.action, error: err })
             }
         }
         // A per-subscription closure
